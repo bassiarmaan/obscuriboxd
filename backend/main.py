@@ -13,6 +13,8 @@ app = FastAPI(title="Obscuriboxd API", version="1.0.0")
 frontend_origins = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    "https://www.obscuriboxd.com",
+    "https://obscuriboxd.com",
 ]
 
 # Add production frontend URL if set
