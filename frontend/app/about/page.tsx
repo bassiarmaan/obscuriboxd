@@ -35,9 +35,10 @@ const team = [
   },
   {
     name: 'Daniel Lee',
-    role: 'Designer & Film Student',
+    role: 'Designer & Creative Marketing',
     image: '/team/daniel.jpg',
     links: {
+      email: 'daniel.lee.4564@gmail.com',
       x: 'https://x.com/Korean_BF',
       letterboxd: 'https://letterboxd.com/dan_lee/',
     },
