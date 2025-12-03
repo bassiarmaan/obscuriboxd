@@ -1,0 +1,295 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&family=DM+Mono:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-display: 'Libre Baskerville', serif;
+  --font-body: 'DM Sans', sans-serif;
+  --font-mono: 'DM Mono', monospace;
+  
+  /* Letterboxd-inspired color palette */
+  --lb-dark: #14181C;
+  --lb-darker: #0D1114;
+  --lb-card: #1C2228;
+  --lb-card-hover: #242C34;
+  --lb-border: #2C3440;
+  --lb-text: #99AABB;
+  --lb-text-light: #D8E0E8;
+  --lb-orange: #FF8000;
+  --lb-green: #00E054;
+  --lb-blue: #40BCF4;
+  --lb-white: #FFFFFF;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: var(--font-body);
+  background: var(--lb-darker);
+  color: var(--lb-text-light);
+  min-height: 100vh;
+  overflow-x: hidden;
+  letter-spacing: 0.01em;
+}
+
+/* Subtle film grain */
+.film-grain {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+  opacity: 0.015;
+  pointer-events: none;
+  z-index: 9999;
+}
+
+/* Minimal vignette */
+.vignette {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9998;
+  background: radial-gradient(ellipse 150% 100% at 50% 50%, transparent 0%, transparent 70%, rgba(13, 17, 20, 0.4) 100%);
+}
+
+/* Custom scrollbar - Letterboxd style */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--lb-darker);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--lb-border);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--lb-green);
+}
+
+/* Selection */
+::selection {
+  background: rgba(0, 224, 84, 0.3);
+  color: var(--lb-white);
+}
+
+/* Input styles */
+input[type="text"] {
+  font-family: var(--font-body);
+}
+
+input[type="text"]::placeholder {
+  color: var(--lb-text);
+  opacity: 0.6;
+}
+
+/* Letterboxd gradient background */
+.gradient-bg {
+  background: linear-gradient(180deg, var(--lb-dark) 0%, var(--lb-darker) 100%);
+}
+
+/* Letterboxd tri-color accent */
+.lb-dots {
+  display: flex;
+  gap: 3px;
+}
+
+.lb-dots::before,
+.lb-dots::after,
+.lb-dots span {
+  content: '';
+  width: 8px;
+  height: 16px;
+  border-radius: 2px;
+}
+
+.lb-dots::before {
+  background: var(--lb-orange);
+}
+
+.lb-dots span {
+  background: var(--lb-green);
+}
+
+.lb-dots::after {
+  background: var(--lb-blue);
+}
+
+/* Green glow effect */
+.green-glow {
+  box-shadow: 
+    0 0 20px rgba(0, 224, 84, 0.15),
+    0 0 40px rgba(0, 224, 84, 0.08);
+}
+
+/* Text gradient - Letterboxd green */
+.text-gradient {
+  background: linear-gradient(135deg, var(--lb-green) 0%, var(--lb-blue) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Orange text gradient */
+.text-gradient-orange {
+  background: linear-gradient(135deg, var(--lb-orange) 0%, #FFB000 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Film strip decoration */
+.film-strip {
+  background: repeating-linear-gradient(
+    90deg,
+    var(--lb-border) 0px,
+    var(--lb-border) 10px,
+    transparent 10px,
+    transparent 14px
+  );
+  height: 8px;
+  border-radius: 2px;
+}
+
+/* Letterboxd-style stat card */
+.stat-card {
+  background: var(--lb-card);
+  border: 1px solid var(--lb-border);
+  transition: all 0.2s ease;
+}
+
+.stat-card:hover {
+  background: var(--lb-card-hover);
+  border-color: rgba(0, 224, 84, 0.3);
+}
+
+/* Chart tooltip */
+.recharts-tooltip-wrapper {
+  outline: none !important;
+}
+
+.custom-tooltip {
+  background: var(--lb-card) !important;
+  border: 1px solid var(--lb-border) !important;
+  border-radius: 8px !important;
+  padding: 12px !important;
+  font-family: var(--font-body) !important;
+}
+
+/* Loading shimmer */
+.shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--lb-card) 0%,
+    var(--lb-card-hover) 50%,
+    var(--lb-card) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+}
+
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* Projector light effect - subtle green tint */
+.projector-light {
+  position: absolute;
+  top: -100px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 250px;
+  height: 400px;
+  background: linear-gradient(
+    180deg,
+    rgba(0, 224, 84, 0.06) 0%,
+    rgba(0, 224, 84, 0.02) 50%,
+    transparent 100%
+  );
+  clip-path: polygon(40% 0%, 60% 0%, 100% 100%, 0% 100%);
+  pointer-events: none;
+}
+
+/* Decorative line - green */
+.decorative-line {
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--lb-border) 20%,
+    var(--lb-green) 50%,
+    var(--lb-border) 80%,
+    transparent 100%
+  );
+}
+
+/* Focus ring */
+.focus-ring:focus-visible {
+  outline: 2px solid var(--lb-green);
+  outline-offset: 4px;
+}
+
+.focus-ring:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* Letterboxd-style button */
+.btn-primary {
+  background: var(--lb-green);
+  color: var(--lb-darker);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 0.75rem 1.5rem;
+  border-radius: 6px;
+  transition: all 0.2s ease;
+}
+
+.btn-primary:hover {
+  background: #00FF5E;
+  transform: translateY(-1px);
+}
+
+/* Rating stars style */
+.rating-star {
+  color: var(--lb-green);
+}
+
+/* Poster hover effect */
+.poster-hover {
+  transition: all 0.2s ease;
+}
+
+.poster-hover:hover {
+  transform: scale(1.03);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+/* Number counter animation */
+@property --num {
+  syntax: '<integer>';
+  initial-value: 0;
+  inherits: false;
+}
+
+.counter {
+  transition: --num 1s;
+  counter-reset: num var(--num);
+}
+
+.counter::after {
+  content: counter(num);
+}
