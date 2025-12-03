@@ -71,6 +71,29 @@ npm run dev
 
 The app will be available at `http://localhost:3000`
 
+## Deployment
+
+### Frontend (Vercel)
+
+1. Push your code to GitHub
+2. Go to [vercel.com](https://vercel.com) and import your repository
+3. Set the **Root Directory** to `frontend`
+4. Add environment variable:
+   - `NEXT_PUBLIC_API_URL` = Your backend URL (e.g., `https://your-app.railway.app`)
+5. Deploy!
+
+### Backend (Railway)
+
+1. Go to [railway.app](https://railway.app) and create a new project
+2. Select "Deploy from GitHub repo"
+3. Set the **Root Directory** to `backend`
+4. Add environment variables:
+   - `TMDB_API_KEY` = Your TMDb API key
+   - `FRONTEND_URL` = Your Vercel URL (e.g., `https://obscuriboxd.vercel.app`)
+5. Deploy!
+
+Alternative backend hosts: [Render](https://render.com), [Fly.io](https://fly.io), [Heroku](https://heroku.com)
+
 ## API Endpoints
 
 ### `POST /analyze`
@@ -122,5 +145,6 @@ This project is not affiliated with Letterboxd. It scrapes publicly available pr
 ## License
 
 MIT
+
 
 

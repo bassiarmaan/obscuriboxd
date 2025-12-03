@@ -9,9 +9,26 @@ import os
 app = FastAPI(title="Obscuriboxd API", version="1.0.0")
 
 # CORS for frontend
+# In production, set FRONTEND_URL environment variable to your Vercel domain
+frontend_origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+
+# Add production frontend URL if set
+frontend_url = os.getenv("FRONTEND_URL")
+if frontend_url:
+    frontend_origins.append(frontend_url)
+    # Also allow the base domain without path
+    frontend_origins.append(frontend_url.rstrip("/"))
+
+# Allow all Vercel preview URLs
+frontend_origins.append("https://*.vercel.app")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=frontend_origins,
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
