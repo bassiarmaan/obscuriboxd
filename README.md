@@ -82,17 +82,21 @@ The app will be available at `http://localhost:3000`
    - `NEXT_PUBLIC_API_URL` = Your backend URL (e.g., `https://your-app.railway.app`)
 5. Deploy!
 
-### Backend (Railway)
+### Backend (Render)
 
-1. Go to [railway.app](https://railway.app) and create a new project
-2. Select "Deploy from GitHub repo"
-3. Set the **Root Directory** to `backend`
+1. Go to [render.com](https://render.com) and create a new **Web Service**
+2. Connect your GitHub repo (`bassiarmaan/obscuriboxd`)
+3. Configure:
+   - **Root Directory**: `backend`
+   - **Runtime**: Python 3
+   - **Build Command**: `pip install -r requirements.txt`
+   - **Start Command**: `uvicorn main:app --host 0.0.0.0 --port $PORT`
 4. Add environment variables:
    - `TMDB_API_KEY` = Your TMDb API key
    - `FRONTEND_URL` = Your Vercel URL (e.g., `https://obscuriboxd.vercel.app`)
 5. Deploy!
 
-Alternative backend hosts: [Render](https://render.com), [Fly.io](https://fly.io), [Heroku](https://heroku.com)
+Alternative backend hosts: [Railway](https://railway.app), [Fly.io](https://fly.io)
 
 ## API Endpoints
 
