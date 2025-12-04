@@ -84,12 +84,7 @@ export default function Home() {
             onClick={handleReset}
             className="flex items-center gap-3 group focus-ring rounded-lg"
           >
-            {/* Letterboxd-style logo dots */}
-            <div className="flex gap-0.5">
-              <div className="w-2 h-5 rounded-sm bg-lb-orange" />
-              <div className="w-2 h-5 rounded-sm bg-lb-green" />
-              <div className="w-2 h-5 rounded-sm bg-lb-blue" />
-            </div>
+            <img src="/logo1.png" alt="Obscuriboxd" className="h-8 w-auto" />
             <span className="font-display text-xl font-bold text-lb-white group-hover:text-lb-green transition-colors">
               obscuriboxd
             </span>

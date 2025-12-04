@@ -10,11 +10,7 @@ export default function PrivacyPage() {
       <header className="py-4 px-6 border-b border-lb-border/50">
         <div className="flex items-center justify-between max-w-3xl mx-auto">
           <Link href="/" className="flex items-center gap-3 group">
-            <div className="flex gap-0.5">
-              <div className="w-2 h-5 rounded-sm bg-lb-orange" />
-              <div className="w-2 h-5 rounded-sm bg-lb-green" />
-              <div className="w-2 h-5 rounded-sm bg-lb-blue" />
-            </div>
+            <img src="/logo1.png" alt="Obscuriboxd" className="h-8 w-auto" />
             <span className="font-display text-xl font-bold text-lb-white group-hover:text-lb-green transition-colors">
               obscuriboxd
             </span>
