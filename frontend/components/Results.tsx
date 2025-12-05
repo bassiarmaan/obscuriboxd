@@ -65,11 +65,11 @@ export default function Results({ data }: Props) {
         </motion.div>
       </div>
 
-      {/* Films by Decade */}
+      {/* Most Obscure Films by Decade */}
       {data.films_by_decade && Object.keys(data.films_by_decade).length > 0 && (
         <motion.div variants={item} className="stat-card rounded-xl p-5">
-          <h3 className="font-display text-lg text-lb-white mb-1">Films by Decade</h3>
-          <p className="text-lb-text text-sm mb-4">Your top films from each era</p>
+          <h3 className="font-display text-lg text-lb-white mb-1">Your Deep Cuts by Decade</h3>
+          <p className="text-lb-text text-sm mb-4">Your most obscure films from each era</p>
           <FilmsByDecade 
             filmsByDecade={data.films_by_decade} 
             decadeBreakdown={data.decade_breakdown}

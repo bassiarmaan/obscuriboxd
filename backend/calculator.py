@@ -191,7 +191,7 @@ def calculate_obscurity_stats(films: list[dict], username: str) -> dict:
     
     mood_analysis = calculate_mood_analysis(films)
     
-    # Films by decade - top 5 per decade sorted by popularity
+    # Films by decade - top 5 MOST OBSCURE per decade (lowest watches = most obscure)
     films_by_decade = {}
     for film in films:
         year = film.get('year')
@@ -199,6 +199,9 @@ def calculate_obscurity_stats(films: list[dict], username: str) -> dict:
             decade = f"{(year // 10) * 10}s"
             if decade not in films_by_decade:
                 films_by_decade[decade] = []
+            
+            # Calculate obscurity score for ranking
+            score, _ = get_film_obscurity(film)
             films_by_decade[decade].append({
                 "title": film.get('title'),
                 "year": film.get('year'),
@@ -206,13 +209,14 @@ def calculate_obscurity_stats(films: list[dict], username: str) -> dict:
                 "popularity": round(film.get('popularity', 0), 1) if film.get('popularity') else None,
                 "director": film.get('director'),
                 "poster_path": film.get('poster_path'),
+                "obscurity_score": round(score, 1),
             })
     
-    # Sort each decade by popularity and limit to 5
+    # Sort each decade by obscurity score (highest = most obscure) and limit to 5
     for decade in films_by_decade:
         films_by_decade[decade] = sorted(
             films_by_decade[decade],
-            key=lambda x: x.get('watches') or x.get('popularity') or 0,
+            key=lambda x: x.get('obscurity_score', 0),
             reverse=True
         )[:5]
     
