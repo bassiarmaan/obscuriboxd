@@ -13,9 +13,12 @@ async def get_user_films(username: str) -> list[dict]:
     """
     Scrape all films from a Letterboxd user's profile.
     Returns a list of films with title, year, rating, and letterboxd URL.
+    Uses dynamic page limit: starts low, increases if user has many films.
     """
     films = []
     page = 1
+    initial_limit = 10  # Start with lower limit for most users
+    max_limit = 25  # Maximum limit for users with huge collections
     
     async with aiohttp.ClientSession() as session:
         while True:
@@ -43,8 +46,19 @@ async def get_user_films(username: str) -> list[dict]:
                     # Rate limiting - be nice to Letterboxd
                     await asyncio.sleep(0.3)
                     
-                    # Reasonable limit to prevent excessive CPU usage (15 pages = ~1080 films)
-                    if page > 15:
+                    # Dynamic limit: if user has many films, increase the limit
+                    # Check every 5 pages if we should continue
+                    if page > initial_limit:
+                        # If we've hit the initial limit, check if user has many films
+                        if len(films) > 600:  # ~60 films per page * 10 pages
+                            # User has a large collection, allow more pages
+                            if page > max_limit:
+                                break
+                        else:
+                            # Normal user, stop at initial limit
+                            break
+                    elif page > max_limit:
+                        # Safety: never exceed max limit
                         break
                     
             except aiohttp.ClientError as e:
