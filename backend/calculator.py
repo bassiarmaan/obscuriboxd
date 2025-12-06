@@ -89,23 +89,29 @@ def get_film_obscurity(film: dict) -> tuple[float, str]:
             score = calculate_obscurity_from_watches(lb_watches)
             return score, 'letterboxd'
     
-    # Fallback to TMDb - estimate watches from popularity
-    # But be more conservative for popular films
+    # If we don't have Letterboxd watch data, check TMDb popularity
+    # But be conservative: if TMDb popularity is low/missing, assume very obscure
     tmdb_pop = film.get('popularity')
     if tmdb_pop and tmdb_pop > 0:
-        # Rough conversion: TMDb popularity to estimated watches
-        # Pop 1 ≈ 30K, Pop 10 ≈ 150K, Pop 50 ≈ 500K, Pop 100 ≈ 1M
-        # For very popular films (pop > 50), be more generous with watch estimates
-        if tmdb_pop > 50:
-            # Popular films likely have 1M+ watches
-            estimated_watches = int(1_000_000 * (tmdb_pop / 100) ** 0.7)
+        # Only use TMDb if it indicates the film is moderately popular
+        # For low popularity or missing data, assume very obscure
+        if tmdb_pop > 20:
+            # Film has some TMDb popularity, estimate watches
+            if tmdb_pop > 50:
+                # Popular films likely have 1M+ watches
+                estimated_watches = int(1_000_000 * (tmdb_pop / 100) ** 0.7)
+            else:
+                estimated_watches = int(30_000 * (tmdb_pop ** 0.85))
+            score = calculate_obscurity_from_watches(estimated_watches)
+            return score, 'tmdb'
         else:
-            estimated_watches = int(30_000 * (tmdb_pop ** 0.85))
-        score = calculate_obscurity_from_watches(estimated_watches)
-        return score, 'tmdb'
+            # Low TMDb popularity (pop <= 20) + no watch data = assume 100% obscure
+            # These are likely short films, obscure docs, etc. that aren't widely watched
+            return 100.0, 'tmdb_low'
     
-    # If no data at all, assume moderately obscure (not 100% since we don't know)
-    return 50, 'none'
+    # If no TMDb data at all (film not in TMDb or no popularity), assume 100% obscure
+    # This covers short films, obscure docs, etc. that only the user has logged
+    return 100.0, 'none'
 
 
 def calculate_obscurity_stats(films: list[dict], username: str) -> dict:
