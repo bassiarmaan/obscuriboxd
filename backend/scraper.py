@@ -117,19 +117,21 @@ async def get_film_director_only(session: aiohttp.ClientSession, film: dict) -> 
     main_url = f"https://letterboxd.com/film/{slug}/"
     
     try:
-        # Add timeout to prevent hanging
-        timeout = aiohttp.ClientTimeout(total=5)  # 5 second timeout per request
-        async with session.get(main_url, headers=get_headers(), timeout=timeout) as response:
+        # Add timeout to prevent hanging (5 second timeout per request)
+        async with asyncio.wait_for(
+            session.get(main_url, headers=get_headers()),
+            timeout=5.0
+        ) as response:
             if response.status != 200:
                 return {}
             
-            html = await response.text()
+            html = await asyncio.wait_for(response.text(), timeout=3.0)
             stats = parse_film_page(html)
             # Only return director
             return {'director': stats.get('director')} if stats.get('director') else {}
     except asyncio.TimeoutError:
         return {}  # Silently skip on timeout
-    except Exception as e:
+    except Exception:
         # Silently skip errors to avoid slowing down the process
         return {}
 
