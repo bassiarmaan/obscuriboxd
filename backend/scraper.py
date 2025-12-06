@@ -43,9 +43,8 @@ async def get_user_films(username: str) -> list[dict]:
                     # Rate limiting - be nice to Letterboxd
                     await asyncio.sleep(0.3)
                     
-                    # Increased limit to capture films from all decades (25 pages = ~1800 films)
-                    # Letterboxd orders by watch date, so we need more pages to get older films
-                    if page > 25:
+                    # Reasonable limit to prevent excessive CPU usage (15 pages = ~1080 films)
+                    if page > 15:
                         break
                     
             except aiohttp.ClientError as e:
