@@ -23,8 +23,19 @@ async def enrich_films_with_tmdb(films: list[dict]) -> list[dict]:
         return films
     
     async with aiohttp.ClientSession() as session:
-        # Process films in smaller batches to reduce CPU load
-        batch_size = 5  # Reduced from 10 to spread out load
+        # Process films in batches - adjust batch size based on total films
+        # For large collections, use larger batches to finish faster
+        total_films = len(films)
+        if total_films > 500:
+            batch_size = 15  # Larger batches for big collections
+            delay = 0.2  # Shorter delay
+        elif total_films > 200:
+            batch_size = 10
+            delay = 0.3
+        else:
+            batch_size = 5  # Smaller batches for normal collections
+            delay = 0.5
+        
         enriched = []
         
         for i in range(0, len(films), batch_size):
@@ -38,8 +49,9 @@ async def enrich_films_with_tmdb(films: list[dict]) -> list[dict]:
                 else:
                     enriched.append(result)
             
-            # Increased rate limiting to reduce CPU usage
-            await asyncio.sleep(0.5)  # Increased from 0.25 to 0.5
+            # Rate limiting
+            if i + batch_size < len(films):  # Don't sleep after last batch
+                await asyncio.sleep(delay)
         
         return enriched
 
@@ -133,13 +145,14 @@ async def search_film(
                 return None
             
             # If we have director info from Letterboxd, validate matches
+            # But only check director for top 1 candidate to reduce API calls
             if letterboxd_director:
                 best_match = None
                 best_score = 0
                 
                 # First, score results based on title and year without API calls
                 scored_results = []
-                for result in results[:10]:  # Check top 10 results
+                for result in results[:5]:  # Check top 5 results (reduced from 10)
                     score = 0
                     result_year = None
                     
@@ -168,8 +181,8 @@ async def search_film(
                 # Sort by initial score (title + year)
                 scored_results.sort(key=lambda x: x[1], reverse=True)
                 
-                # Now check directors for top 2 candidates only (reduced from 3 to lower CPU usage)
-                for result, initial_score in scored_results[:2]:
+                # Only check director for top 1 candidate to minimize API calls
+                for result, initial_score in scored_results[:1]:
                     score = initial_score
                     
                     # Get director from TMDb to validate
@@ -201,8 +214,8 @@ async def search_film(
                                         tmdb_dir_normalized in letterboxd_dir_normalized):
                                         score += 15
                         
-                        # Increased delay to reduce CPU usage
-                        await asyncio.sleep(0.2)  # Increased from 0.1 to 0.2
+                        # Small delay to avoid rate limiting (reduced for speed)
+                        await asyncio.sleep(0.1)
                     
                     if score > best_score:
                         best_score = score
