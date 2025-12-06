@@ -62,34 +62,20 @@ async def enrich_with_letterboxd_stats(films: list[dict]) -> list[dict]:
     if not films:
         return films
     
-    # Determine which films to sample for watch counts (for speed)
+    # Determine which films to sample
     if len(films) <= 30:
-        watch_count_indices = list(range(len(films)))
+        sample_indices = list(range(len(films)))
     else:
         # Sample evenly across the list
         sample_size = 30
         step = len(films) / sample_size
-        watch_count_indices = [int(i * step) for i in range(sample_size)]
+        sample_indices = [int(i * step) for i in range(sample_size)]
+    
+    films_to_fetch = [(i, films[i]) for i in sample_indices]
     
     async with aiohttp.ClientSession() as session:
-        # First, fetch director info for ALL films (needed for accurate TMDb matching)
-        # Process in larger batches for speed
-        batch_size = 20  # Increased batch size
-        for i in range(0, len(films), batch_size):
-            batch = films[i:i + batch_size]
-            tasks = [get_film_director_only(session, film) for film in batch]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            
-            for film, result in zip(batch, results):
-                if isinstance(result, dict) and result.get('director'):
-                    film['director'] = result['director']
-            
-            # Reduced rate limiting for speed
-            if i + batch_size < len(films):  # Don't sleep after last batch
-                await asyncio.sleep(0.1)
-        
-        # Then, fetch full stats (watch counts, etc.) for sampled films
-        films_to_fetch = [(i, films[i]) for i in watch_count_indices]
+        # Process in batches
+        batch_size = 10
         
         for i in range(0, len(films_to_fetch), batch_size):
             batch = films_to_fetch[i:i + batch_size]
@@ -104,36 +90,6 @@ async def enrich_with_letterboxd_stats(films: list[dict]) -> list[dict]:
             await asyncio.sleep(0.3)
     
     return films
-
-
-async def get_film_director_only(session: aiohttp.ClientSession, film: dict) -> dict:
-    """
-    Get only director info from Letterboxd (lightweight, for TMDb matching).
-    """
-    slug = film.get('slug', '')
-    if not slug:
-        return {}
-    
-    main_url = f"https://letterboxd.com/film/{slug}/"
-    
-    try:
-        # Add timeout to prevent hanging (5 second timeout per request)
-        async with asyncio.wait_for(
-            session.get(main_url, headers=get_headers()),
-            timeout=5.0
-        ) as response:
-            if response.status != 200:
-                return {}
-            
-            html = await asyncio.wait_for(response.text(), timeout=3.0)
-            stats = parse_film_page(html)
-            # Only return director
-            return {'director': stats.get('director')} if stats.get('director') else {}
-    except asyncio.TimeoutError:
-        return {}  # Silently skip on timeout
-    except Exception:
-        # Silently skip errors to avoid slowing down the process
-        return {}
 
 
 async def get_film_stats(session: aiohttp.ClientSession, film: dict) -> dict:
