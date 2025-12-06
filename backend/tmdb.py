@@ -23,8 +23,8 @@ async def enrich_films_with_tmdb(films: list[dict]) -> list[dict]:
         return films
     
     async with aiohttp.ClientSession() as session:
-        # Process films in batches to avoid rate limiting
-        batch_size = 10
+        # Process films in smaller batches to reduce CPU load
+        batch_size = 5  # Reduced from 10 to spread out load
         enriched = []
         
         for i in range(0, len(films), batch_size):
@@ -38,8 +38,8 @@ async def enrich_films_with_tmdb(films: list[dict]) -> list[dict]:
                 else:
                     enriched.append(result)
             
-            # Rate limiting
-            await asyncio.sleep(0.25)
+            # Increased rate limiting to reduce CPU usage
+            await asyncio.sleep(0.5)  # Increased from 0.25 to 0.5
         
         return enriched
 
@@ -168,8 +168,8 @@ async def search_film(
                 # Sort by initial score (title + year)
                 scored_results.sort(key=lambda x: x[1], reverse=True)
                 
-                # Now check directors for top 3 candidates to avoid too many API calls
-                for result, initial_score in scored_results[:3]:
+                # Now check directors for top 2 candidates only (reduced from 3 to lower CPU usage)
+                for result, initial_score in scored_results[:2]:
                     score = initial_score
                     
                     # Get director from TMDb to validate
@@ -201,8 +201,8 @@ async def search_film(
                                         tmdb_dir_normalized in letterboxd_dir_normalized):
                                         score += 15
                         
-                        # Small delay to avoid rate limiting
-                        await asyncio.sleep(0.1)
+                        # Increased delay to reduce CPU usage
+                        await asyncio.sleep(0.2)  # Increased from 0.1 to 0.2
                     
                     if score > best_score:
                         best_score = score

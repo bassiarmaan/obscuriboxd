@@ -43,7 +43,9 @@ async def get_user_films(username: str) -> list[dict]:
                     # Rate limiting - be nice to Letterboxd
                     await asyncio.sleep(0.3)
                     
-                    # Continue until no more films are found (no hard limit)
+                    # Reasonable limit to prevent excessive CPU usage (15 pages = ~1080 films)
+                    if page > 15:
+                        break
                     
             except aiohttp.ClientError as e:
                 raise Exception(f"Error fetching data: {str(e)}")
