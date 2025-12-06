@@ -123,13 +123,31 @@ def get_film_obscurity(film: dict) -> tuple[float, str]:
     # 1. Short films/obscure docs (100% obscure)
     # 2. Popular films that failed TMDb matching (shouldn't be 100%)
     # Check if film has other TMDb indicators (poster, genres, etc.)
-    if film.get('poster_path') or film.get('genres'):
-        # Film has TMDb data but no popularity - likely a matching issue
-        # Assume moderately obscure (70-80%) rather than 100%
-        return 75.0, 'tmdb_no_pop'
+    if film.get('tmdb_id') or film.get('poster_path') or film.get('genres'):
+        # Film was matched to TMDb but has no popularity/votes
+        # This could be a matching issue or truly obscure
+        # Check vote_average as another indicator
+        vote_avg = film.get('vote_average', 0)
+        if vote_avg > 6.0:  # Decent rating suggests it's known
+            # Assume moderately popular (50-60% obscure)
+            return 55.0, 'tmdb_no_pop'
+        else:
+            # Low rating or no rating - likely obscure but in TMDb
+            return 85.0, 'tmdb_no_pop'
     
-    # No TMDb data at all - likely truly obscure (short films, docs, etc.)
-    return 100.0, 'none'
+    # No TMDb data at all - film wasn't matched to TMDb
+    # This could be:
+    # 1. Truly obscure (short films, docs, etc.) - 100% obscure
+    # 2. Popular film that failed TMDb matching - shouldn't be 100%
+    # Check title for common patterns that suggest it might be popular
+    title = film.get('title', '').lower()
+    # If title contains common words or is very short, might be obscure
+    # Otherwise, assume it might be a matching failure and be conservative
+    if len(title) < 5 or any(word in title for word in ['short', 'doc', 'experimental']):
+        return 100.0, 'none'
+    else:
+        # Could be a matching failure - assume moderately obscure (not 100%)
+        return 80.0, 'none'
 
 
 def calculate_obscurity_stats(films: list[dict], username: str) -> dict:

@@ -182,8 +182,10 @@ async def search_film(
                 scored_results.sort(key=lambda x: x[1], reverse=True)
                 
                 # Only check director for top 1 candidate to minimize API calls
+                best_initial_score = 0
                 for result, initial_score in scored_results[:1]:
                     score = initial_score
+                    best_initial_score = initial_score  # Track the initial score
                     
                     # Get director from TMDb to validate
                     tmdb_id = result.get('id')
@@ -213,6 +215,16 @@ async def search_film(
                                     if (letterboxd_dir_normalized in tmdb_dir_normalized or 
                                         tmdb_dir_normalized in letterboxd_dir_normalized):
                                         score += 15
+                            
+                            # If director didn't match but we have good title+year match, check popularity
+                            # For popular films, be more lenient - accept title+year match even without director
+                            if score == initial_score and initial_score >= 30:  # Good title+year but no director match
+                                pop = details.get('popularity', 0)
+                                votes = details.get('vote_count', 0)
+                                # If film has significant popularity or votes, accept the match
+                                # Popular films are less likely to have wrong matches
+                                if pop > 10 or votes > 500:
+                                    score += 20  # Boost score to accept it
                         
                         # Small delay to avoid rate limiting (reduced for speed)
                         await asyncio.sleep(0.1)
@@ -224,6 +236,7 @@ async def search_film(
                 # Only return if we found a good match (score >= 20, meaning at least title+year or director match)
                 if best_match and best_score >= 20:
                     return best_match
+                
                 # If no good match found, return None to avoid wrong matches
                 return None
             
