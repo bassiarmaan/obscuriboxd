@@ -73,8 +73,8 @@ async def enrich_with_letterboxd_stats(films: list[dict]) -> list[dict]:
     
     async with aiohttp.ClientSession() as session:
         # First, fetch director info for ALL films (needed for accurate TMDb matching)
-        # Process in batches
-        batch_size = 10
+        # Process in larger batches for speed
+        batch_size = 20  # Increased batch size
         for i in range(0, len(films), batch_size):
             batch = films[i:i + batch_size]
             tasks = [get_film_director_only(session, film) for film in batch]
@@ -84,8 +84,9 @@ async def enrich_with_letterboxd_stats(films: list[dict]) -> list[dict]:
                 if isinstance(result, dict) and result.get('director'):
                     film['director'] = result['director']
             
-            # Rate limiting
-            await asyncio.sleep(0.2)
+            # Reduced rate limiting for speed
+            if i + batch_size < len(films):  # Don't sleep after last batch
+                await asyncio.sleep(0.1)
         
         # Then, fetch full stats (watch counts, etc.) for sampled films
         films_to_fetch = [(i, films[i]) for i in watch_count_indices]
@@ -116,7 +117,9 @@ async def get_film_director_only(session: aiohttp.ClientSession, film: dict) -> 
     main_url = f"https://letterboxd.com/film/{slug}/"
     
     try:
-        async with session.get(main_url, headers=get_headers()) as response:
+        # Add timeout to prevent hanging
+        timeout = aiohttp.ClientTimeout(total=5)  # 5 second timeout per request
+        async with session.get(main_url, headers=get_headers(), timeout=timeout) as response:
             if response.status != 200:
                 return {}
             
@@ -124,8 +127,10 @@ async def get_film_director_only(session: aiohttp.ClientSession, film: dict) -> 
             stats = parse_film_page(html)
             # Only return director
             return {'director': stats.get('director')} if stats.get('director') else {}
+    except asyncio.TimeoutError:
+        return {}  # Silently skip on timeout
     except Exception as e:
-        print(f"Error fetching director for {slug}: {e}")
+        # Silently skip errors to avoid slowing down the process
         return {}
 
 
