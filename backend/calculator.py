@@ -53,8 +53,9 @@ def calculate_obscurity_from_watches(watches: int) -> float:
     Calculate obscurity score using piecewise linear interpolation.
     This gives us precise control over score distribution.
     """
+    # Films with 0 watches are 100% obscure
     if watches <= 0:
-        return 50.0
+        return 100.0
     
     # Handle edge cases
     if watches >= SCORE_CURVE[0][0]:
@@ -79,19 +80,31 @@ def calculate_obscurity_from_watches(watches: int) -> float:
 def get_film_obscurity(film: dict) -> tuple[float, str]:
     """Get obscurity score for a single film."""
     lb_watches = film.get('letterboxd_watches')
-    if lb_watches and lb_watches > 0:
-        score = calculate_obscurity_from_watches(lb_watches)
-        return score, 'letterboxd'
+    # Check if watches is explicitly 0 (very obscure) or None/missing
+    if lb_watches is not None:
+        if lb_watches == 0:
+            # 0 watches = 100% obscure
+            return 100.0, 'letterboxd'
+        elif lb_watches > 0:
+            score = calculate_obscurity_from_watches(lb_watches)
+            return score, 'letterboxd'
     
     # Fallback to TMDb - estimate watches from popularity
+    # But be more conservative for popular films
     tmdb_pop = film.get('popularity')
     if tmdb_pop and tmdb_pop > 0:
         # Rough conversion: TMDb popularity to estimated watches
         # Pop 1 ≈ 30K, Pop 10 ≈ 150K, Pop 50 ≈ 500K, Pop 100 ≈ 1M
-        estimated_watches = int(30_000 * (tmdb_pop ** 0.85))
+        # For very popular films (pop > 50), be more generous with watch estimates
+        if tmdb_pop > 50:
+            # Popular films likely have 1M+ watches
+            estimated_watches = int(1_000_000 * (tmdb_pop / 100) ** 0.7)
+        else:
+            estimated_watches = int(30_000 * (tmdb_pop ** 0.85))
         score = calculate_obscurity_from_watches(estimated_watches)
         return score, 'tmdb'
     
+    # If no data at all, assume moderately obscure (not 100% since we don't know)
     return 50, 'none'
 
 
