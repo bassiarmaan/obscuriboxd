@@ -123,22 +123,12 @@ def calculate_obscurity_stats(films: list[dict], username: str) -> dict:
         genre_counts.update(film.get('genres', []))
     top_genres = dict(genre_counts.most_common(10))
     
-    # Decade breakdown - include ALL films with years
+    # Decade breakdown
     decade_counts = Counter()
-    films_with_years = 0
-    films_without_years = 0
     for film in films:
         year = film.get('year')
         if year:
             decade_counts[f"{(year // 10) * 10}s"] += 1
-            films_with_years += 1
-        else:
-            films_without_years += 1
-    
-    # Debug: print decade distribution
-    print(f"Total films: {len(films)}, With years: {films_with_years}, Without years: {films_without_years}")
-    print(f"Decade breakdown: {dict(sorted(decade_counts.items()))}")
-    
     decade_breakdown = dict(sorted(decade_counts.items()))
     
     # Country breakdown
