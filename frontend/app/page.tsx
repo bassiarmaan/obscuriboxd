@@ -33,11 +33,13 @@ export type AnalysisResult = {
 
 export default function Home() {
   const [isLoading, setIsLoading] = useState(false)
+  const [isLoadingComplete, setIsLoadingComplete] = useState(false)
   const [results, setResults] = useState<AnalysisResult | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   const handleAnalyze = async (username: string) => {
     setIsLoading(true)
+    setIsLoadingComplete(false)
     setError(null)
     setResults(null)
 
@@ -57,11 +59,19 @@ export default function Home() {
       }
 
       const data = await response.json()
+      
+      // Mark loading as complete to animate progress to 100%
+      setIsLoadingComplete(true)
+      
+      // Small delay to let progress bar reach 100% before showing results
+      await new Promise(resolve => setTimeout(resolve, 500))
+      
       setResults(data)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong')
     } finally {
       setIsLoading(false)
+      setIsLoadingComplete(false)
     }
   }
 
@@ -185,7 +195,7 @@ export default function Home() {
               transition={{ duration: 0.3 }}
               className="w-full"
             >
-              <LoadingState />
+              <LoadingState isComplete={isLoadingComplete} />
             </motion.div>
           )}
 

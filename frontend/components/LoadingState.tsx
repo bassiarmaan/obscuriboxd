@@ -1,7 +1,7 @@
 'use client'
 
 import { motion, AnimatePresence } from 'framer-motion'
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 
 const messages = [
   'Connecting to Letterboxd...',
@@ -11,24 +11,83 @@ const messages = [
   'Almost there...',
 ]
 
-export default function LoadingState() {
+type Props = {
+  isComplete?: boolean
+}
+
+export default function LoadingState({ isComplete = false }: Props) {
   const [messageIndex, setMessageIndex] = useState(0)
   const [progress, setProgress] = useState(0)
+  const startTime = useRef(Date.now())
+  const progressRef = useRef(0)
 
   useEffect(() => {
-    const progressInterval = setInterval(() => {
-      setProgress((prev) => (prev >= 95 ? prev : Math.min(95, prev + 2)))
-    }, 800)
+    // Realistic progress simulation based on typical processing times
+    // Phase 1 (0-30%): Scraping Letterboxd - slower start
+    // Phase 2 (30-70%): TMDb enrichment - faster middle
+    // Phase 3 (70-95%): Calculations - slower end
+    // Phase 4 (95-100%): Final processing - only when complete
+    
+    const updateProgress = () => {
+      if (isComplete) {
+        // When complete, quickly animate to 100%
+        if (progressRef.current < 100) {
+          progressRef.current = Math.min(100, progressRef.current + 2)
+          setProgress(progressRef.current)
+        }
+        return
+      }
 
+      const elapsed = Date.now() - startTime.current
+      const elapsedSeconds = elapsed / 1000
+
+      // Realistic progress curve based on time
+      let targetProgress = 0
+      
+      if (elapsedSeconds < 5) {
+        // First 5 seconds: 0-25% (scraping phase)
+        targetProgress = (elapsedSeconds / 5) * 25
+      } else if (elapsedSeconds < 15) {
+        // Next 10 seconds: 25-65% (TMDb enrichment phase)
+        targetProgress = 25 + ((elapsedSeconds - 5) / 10) * 40
+      } else if (elapsedSeconds < 30) {
+        // Next 15 seconds: 65-90% (calculation phase)
+        targetProgress = 65 + ((elapsedSeconds - 15) / 15) * 25
+      } else {
+        // After 30 seconds: 90-95% (slow crawl)
+        targetProgress = Math.min(95, 90 + ((elapsedSeconds - 30) / 10) * 5)
+      }
+
+      // Smooth progress updates
+      if (targetProgress > progressRef.current) {
+        const increment = Math.min(1, (targetProgress - progressRef.current) * 0.3)
+        progressRef.current = Math.min(targetProgress, progressRef.current + increment)
+        setProgress(Math.round(progressRef.current))
+      }
+    }
+
+    const progressInterval = setInterval(updateProgress, 200) // Update more frequently for smoother progress
+
+    // Update messages based on progress
     const messageInterval = setInterval(() => {
-      setMessageIndex((prev) => (prev >= messages.length - 1 ? prev : prev + 1))
-    }, 5000)
+      if (progressRef.current < 25) {
+        setMessageIndex(0)
+      } else if (progressRef.current < 50) {
+        setMessageIndex(1)
+      } else if (progressRef.current < 75) {
+        setMessageIndex(2)
+      } else if (progressRef.current < 95) {
+        setMessageIndex(3)
+      } else {
+        setMessageIndex(4)
+      }
+    }, 1000)
 
     return () => {
       clearInterval(progressInterval)
       clearInterval(messageInterval)
     }
-  }, [])
+  }, [isComplete])
 
   return (
     <div className="flex flex-col items-center justify-center py-20 px-4">
