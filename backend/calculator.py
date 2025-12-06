@@ -90,12 +90,13 @@ def get_film_obscurity(film: dict) -> tuple[float, str]:
             return score, 'letterboxd'
     
     # If we don't have Letterboxd watch data, check TMDb popularity
-    # But be conservative: if TMDb popularity is low/missing, assume very obscure
     tmdb_pop = film.get('popularity')
+    tmdb_vote_count = film.get('vote_count', 0)
+    
     if tmdb_pop and tmdb_pop > 0:
-        # Only use TMDb if it indicates the film is moderately popular
-        # For low popularity or missing data, assume very obscure
-        if tmdb_pop > 20:
+        # Use TMDb popularity to estimate watches
+        # Lower threshold - even films with pop > 5 might be somewhat popular
+        if tmdb_pop > 5:
             # Film has some TMDb popularity, estimate watches
             if tmdb_pop > 50:
                 # Popular films likely have 1M+ watches
@@ -105,12 +106,29 @@ def get_film_obscurity(film: dict) -> tuple[float, str]:
             score = calculate_obscurity_from_watches(estimated_watches)
             return score, 'tmdb'
         else:
-            # Low TMDb popularity (pop <= 20) + no watch data = assume 100% obscure
-            # These are likely short films, obscure docs, etc. that aren't widely watched
-            return 100.0, 'tmdb_low'
+            # Very low TMDb popularity (pop <= 5) + no watch data = assume very obscure
+            # But not 100% - could still be somewhat known (90-95%)
+            return 92.0, 'tmdb_low'
     
-    # If no TMDb data at all (film not in TMDb or no popularity), assume 100% obscure
-    # This covers short films, obscure docs, etc. that only the user has logged
+    # Check vote_count as fallback - if film has many votes, it's probably popular
+    if tmdb_vote_count and tmdb_vote_count > 100:
+        # Film has significant votes but no popularity score - estimate from votes
+        # Rough: 1000 votes ≈ 50K watches, 10000 votes ≈ 500K watches
+        estimated_watches = int(50 * (tmdb_vote_count ** 0.8))
+        score = calculate_obscurity_from_watches(estimated_watches)
+        return score, 'tmdb_votes'
+    
+    # If no TMDb data at all (film not in TMDb or no popularity/votes)
+    # This could be:
+    # 1. Short films/obscure docs (100% obscure)
+    # 2. Popular films that failed TMDb matching (shouldn't be 100%)
+    # Check if film has other TMDb indicators (poster, genres, etc.)
+    if film.get('poster_path') or film.get('genres'):
+        # Film has TMDb data but no popularity - likely a matching issue
+        # Assume moderately obscure (70-80%) rather than 100%
+        return 75.0, 'tmdb_no_pop'
+    
+    # No TMDb data at all - likely truly obscure (short films, docs, etc.)
     return 100.0, 'none'
 
 
