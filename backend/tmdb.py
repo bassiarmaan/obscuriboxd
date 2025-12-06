@@ -168,8 +168,9 @@ async def search_film(
                 # Sort by initial score (title + year)
                 scored_results.sort(key=lambda x: x[1], reverse=True)
                 
-                # Now check directors for top 3 candidates to avoid too many API calls
-                for result, initial_score in scored_results[:3]:
+                # Now check directors for top 5 candidates to find the right match
+                director_matched = False
+                for result, initial_score in scored_results[:5]:
                     score = initial_score
                     
                     # Get director from TMDb to validate
@@ -186,20 +187,40 @@ async def search_film(
                             crew = credits.get('crew', [])
                             directors = [c['name'] for c in crew if c.get('job') == 'Director']
                             
-                            # Check if director matches
+                            # Check if director matches - this is REQUIRED when we have director info
                             if directors:
                                 # Normalize director names for comparison
                                 letterboxd_dir_normalized = letterboxd_director.lower().strip()
                                 for tmdb_dir in directors:
                                     tmdb_dir_normalized = tmdb_dir.lower().strip()
-                                    # Exact match
+                                    # Exact match - REQUIRED
                                     if letterboxd_dir_normalized == tmdb_dir_normalized:
-                                        score += 30
+                                        score += 50  # High weight for director match
+                                        director_matched = True
                                         break
                                     # Partial match (handles name variations like "Lee Chang Dong" vs "Lee Chang-dong")
+                                    # Only accept if names are very similar (one contains the other and length is close)
                                     if (letterboxd_dir_normalized in tmdb_dir_normalized or 
                                         tmdb_dir_normalized in letterboxd_dir_normalized):
-                                        score += 15
+                                        # Check if lengths are similar (within 30% difference)
+                                        len_diff = abs(len(letterboxd_dir_normalized) - len(tmdb_dir_normalized))
+                                        max_len = max(len(letterboxd_dir_normalized), len(tmdb_dir_normalized))
+                                        if max_len > 0 and (len_diff / max_len) < 0.3:
+                                            score += 30
+                                            director_matched = True
+                                            break
+                            
+                            # Also require exact year match when we have year info
+                            if year:
+                                release_date = details.get('release_date', '')
+                                if release_date:
+                                    try:
+                                        result_year = int(release_date.split('-')[0])
+                                        if result_year != year:
+                                            # Year mismatch - heavily penalize
+                                            score -= 30
+                                    except (ValueError, IndexError):
+                                        pass
                         
                         # Small delay to avoid rate limiting
                         await asyncio.sleep(0.1)
@@ -208,49 +229,59 @@ async def search_film(
                         best_score = score
                         best_match = result
                 
-                # Only return if we found a good match (score >= 20, meaning at least title+year or director match)
-                if best_match and best_score >= 20:
+                # Only return if director matched AND we have a good overall score
+                # This prevents matching to wrong films with same title/year
+                if best_match and director_matched and best_score >= 30:
                     return best_match
-                # If no good match found, return None to avoid wrong matches
+                # If no director match found, return None to avoid wrong matches
                 return None
             
-            # No director info - prioritize exact year matches and title similarity
+            # No director info - require exact year match and exact title match
             if year:
                 best_match = None
                 best_score = 0
                 
-                for result in results[:5]:  # Check top 5 results
+                for result in results[:10]:  # Check top 10 results
                     score = 0
                     result_title = result.get('title', '').lower().strip()
                     search_title = title.lower().strip()
                     
-                    # Title match
+                    # Require exact title match (or very close)
                     if result_title == search_title:
-                        score += 20
+                        score += 30
                     elif search_title in result_title or result_title in search_title:
-                        score += 10
+                        # Only accept if the difference is small (e.g., "The Funeral" vs "Funeral")
+                        title_diff = abs(len(result_title) - len(search_title))
+                        if title_diff <= 5:  # Allow small differences like "The" prefix
+                            score += 15
+                        else:
+                            continue  # Skip if titles are too different
+                    else:
+                        continue  # Skip if title doesn't match
                     
-                    # Year match
+                    # Require exact year match (no tolerance)
                     release_date = result.get('release_date', '')
                     if release_date:
                         try:
                             result_year = int(release_date.split('-')[0])
                             if result_year == year:
-                                score += 20
-                            elif abs(result_year - year) <= 1:
-                                score += 10
+                                score += 30
+                            else:
+                                continue  # Skip if year doesn't match exactly
                         except (ValueError, IndexError):
-                            pass
+                            continue  # Skip if we can't parse year
+                    else:
+                        continue  # Skip if no release date
                     
                     if score > best_score:
                         best_score = score
                         best_match = result
                 
-                # Only return if we have a reasonable match (score >= 20)
-                if best_match and best_score >= 20:
+                # Only return if we have exact title + exact year match
+                if best_match and best_score >= 30:
                     return best_match
-                # Fallback to first result if no good match
-                return results[0] if results else None
+                # Return None if no exact match - better than wrong match
+                return None
             
             # No year specified - prioritize exact title matches
             for result in results[:5]:
