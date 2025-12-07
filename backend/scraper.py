@@ -84,12 +84,13 @@ async def get_user_films(username: str) -> list[dict]:
             film.update({k: v for k, v in db_film.items() if k != 'user_rating'})
             
             # If film doesn't have a poster, add it to scrape list to get poster
-            if not film.get('poster_path'):
+            # This ensures posters are fetched even for films already in DB
+            if not film.get('poster_path') or not film.get('poster_path').strip():
                 films_to_scrape.append(film)
             else:
                 enriched_films.append(film)
         else:
-            # Film not in DB - need to scrape
+            # Film not in DB - need to scrape (will get poster during scraping)
             films_to_scrape.append(film)
     
     # Scrape only films not in database, but limit to prevent server overload
@@ -201,11 +202,16 @@ async def get_film_stats(session: aiohttp.ClientSession, film: dict, retries: in
                         main_stats = parse_film_page(main_html)
                         stats.update({k: v for k, v in main_stats.items() if v})
                 
-                # Get TMDb poster if we don't have one from Letterboxd
+                # Always try to get TMDb poster if we don't have one from Letterboxd
+                # This ensures posters are fetched during scraping
                 if stats.get('title') and stats.get('year') and not stats.get('poster_path'):
-                    tmdb_poster = await get_tmdb_poster(stats.get('title'), stats.get('year'))
-                    if tmdb_poster:
-                        stats['poster_path'] = tmdb_poster
+                    try:
+                        tmdb_poster = await get_tmdb_poster(stats.get('title'), stats.get('year'))
+                        if tmdb_poster:
+                            stats['poster_path'] = tmdb_poster
+                    except Exception:
+                        # Silently fail - poster is optional
+                        pass
                 
                 return stats
         except (aiohttp.ClientError, asyncio.TimeoutError, ConnectionError, OSError) as e:
