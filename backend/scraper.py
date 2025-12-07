@@ -137,21 +137,23 @@ async def enrich_with_letterboxd_stats(films: list[dict]) -> list[dict]:
     if not films:
         return films
     
-    # Adjust batch size based on total films to avoid overwhelming
-    # Increased batch sizes and reduced delays for faster scraping
+    # Optimized batch sizes for maximum speed
+    # For large-scale scraping, use much larger batches
     if len(films) > 1000:
-        batch_size = 20  # Increased from 5
-        delay = 0.1  # Reduced from 0.5
+        batch_size = 50  # Increased for bulk scraping
+        delay = 0.05  # Minimal delay
     elif len(films) > 500:
-        batch_size = 25  # Increased from 8
-        delay = 0.1  # Reduced from 0.4
+        batch_size = 50
+        delay = 0.05
     else:
-        batch_size = 30  # Increased from 10
-        delay = 0.1  # Reduced from 0.3
+        batch_size = 50
+        delay = 0.05
     
-    # Create session with timeout settings
-    timeout = aiohttp.ClientTimeout(total=30, connect=10)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
+    # Create session with optimized timeout and connection limits
+    timeout = aiohttp.ClientTimeout(total=15, connect=5)
+    connector = aiohttp.TCPConnector(limit=100, limit_per_host=50)  # Higher connection limits
+    
+    async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
         for i in range(0, len(films), batch_size):
             batch = films[i:i + batch_size]
             tasks = [get_film_stats(session, film) for film in batch]
@@ -162,8 +164,8 @@ async def enrich_with_letterboxd_stats(films: list[dict]) -> list[dict]:
                     film.update(result)
                 # Silently skip exceptions - they're handled in get_film_stats
             
-            # Rate limiting - be respectful to Letterboxd
-            if i + batch_size < len(films):  # Don't sleep after last batch
+            # Minimal rate limiting - only for very large batches
+            if i + batch_size < len(films) and len(films) > 100:
                 await asyncio.sleep(delay)
     
     return films
@@ -185,35 +187,42 @@ async def get_film_stats(session: aiohttp.ClientSession, film: dict, retries: in
     
     for attempt in range(retries):
         try:
-            # Add timeout to prevent hanging
-            timeout = aiohttp.ClientTimeout(total=10, connect=5)
-            async with session.get(stats_url, headers=get_headers(), timeout=timeout) as response:
-                if response.status != 200:
-                    return {}
-                
-                html = await response.text()
+            # Optimized: fetch stats and main page in parallel
+            stats_url = f"https://letterboxd.com/csi/film/{slug}/stats/"
+            main_url = f"https://letterboxd.com/film/{slug}/"
+            
+            # Fetch both pages concurrently
+            stats_task = session.get(stats_url, headers=get_headers())
+            main_task = session.get(main_url, headers=get_headers())
+            
+            stats_response, main_response = await asyncio.gather(
+                stats_task, main_task, return_exceptions=True
+            )
+            
+            stats = {}
+            
+            # Parse stats page
+            if not isinstance(stats_response, Exception) and stats_response.status == 200:
+                html = await stats_response.text()
                 stats = parse_stats_html(html)
-                
-                # Always get additional details from main page (director, genres, countries)
-                main_url = f"https://letterboxd.com/film/{slug}/"
-                async with session.get(main_url, headers=get_headers(), timeout=timeout) as main_response:
-                    if main_response.status == 200:
-                        main_html = await main_response.text()
-                        main_stats = parse_film_page(main_html)
-                        stats.update({k: v for k, v in main_stats.items() if v})
-                
-                # Always try to get TMDb poster if we don't have one from Letterboxd
-                # This ensures posters are fetched during scraping
-                if stats.get('title') and stats.get('year') and not stats.get('poster_path'):
-                    try:
-                        tmdb_poster = await get_tmdb_poster(stats.get('title'), stats.get('year'))
-                        if tmdb_poster:
-                            stats['poster_path'] = tmdb_poster
-                    except Exception:
-                        # Silently fail - poster is optional
-                        pass
-                
-                return stats
+            
+            # Parse main page
+            if not isinstance(main_response, Exception) and main_response.status == 200:
+                main_html = await main_response.text()
+                main_stats = parse_film_page(main_html)
+                stats.update({k: v for k, v in main_stats.items() if v})
+            
+            # TMDb poster lookup - skip during bulk scraping for speed
+            # Can be added later via add_posters.py script
+            # if stats.get('title') and stats.get('year') and not stats.get('poster_path'):
+            #     try:
+            #         tmdb_poster = await get_tmdb_poster(stats.get('title'), stats.get('year'))
+            #         if tmdb_poster:
+            #             stats['poster_path'] = tmdb_poster
+            #     except Exception:
+            #         pass
+            
+            return stats
         except (aiohttp.ClientError, asyncio.TimeoutError, ConnectionError, OSError) as e:
             # Retry on connection errors
             if attempt < retries - 1:

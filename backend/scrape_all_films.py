@@ -73,9 +73,10 @@ async def scrape_from_user(session: aiohttp.ClientSession, username: str):
         if not page_slugs:
             break
         slugs.extend(page_slugs)
-        print(f"   Page {page}: {len(page_slugs)} films")
+        if page % 10 == 0:
+            print(f"   Page {page}: {len(page_slugs)} films (total: {len(slugs)})")
         page += 1
-        await asyncio.sleep(0.3)
+        await asyncio.sleep(0.1)  # Reduced delay
     
     return list(set(slugs))  # Remove duplicates
 
@@ -92,7 +93,11 @@ async def main():
     
     all_slugs = set()
     
-    async with aiohttp.ClientSession() as session:
+    # Optimized session with higher connection limits
+    timeout = aiohttp.ClientTimeout(total=15, connect=5)
+    connector = aiohttp.TCPConnector(limit=100, limit_per_host=50)
+    
+    async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
         # Get films from users
         for user in users:
             try:
@@ -101,29 +106,40 @@ async def main():
                 print(f"✅ {user}: {len(user_slugs)} films\n")
             except Exception as e:
                 print(f"❌ {user}: {e}\n")
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.2)  # Reduced delay
         
         print(f"📊 Total unique films found: {len(all_slugs)}\n")
-        print("💾 Scraping film data...\n")
+        print("💾 Scraping film data in parallel batches...\n")
         
-        # Scrape all films
+        # Convert to list for processing
+        slugs_list = list(all_slugs)
+        
+        # Process in large parallel batches for maximum speed
+        batch_size = 50
         saved = 0
         skipped = 0
         failed = 0
         
-        for i, slug in enumerate(all_slugs, 1):
-            if i % 100 == 0:
-                print(f"   Progress: {i}/{len(all_slugs)} (saved: {saved}, skipped: {skipped}, failed: {failed})")
+        for i in range(0, len(slugs_list), batch_size):
+            batch = slugs_list[i:i + batch_size]
+            tasks = [scrape_film(session, slug) for slug in batch]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
             
-            try:
-                if await scrape_film(session, slug):
-                    saved += 1
+            for result in results:
+                if isinstance(result, bool):
+                    if result:
+                        saved += 1
+                    else:
+                        skipped += 1
                 else:
-                    skipped += 1
-            except:
-                failed += 1
+                    failed += 1
             
-            await asyncio.sleep(0.2)
+            if (i + batch_size) % 500 == 0 or i + batch_size >= len(slugs_list):
+                print(f"   Progress: {min(i + batch_size, len(slugs_list))}/{len(slugs_list)} (saved: {saved}, skipped: {skipped}, failed: {failed})")
+            
+            # Minimal delay between batches
+            if i + batch_size < len(slugs_list):
+                await asyncio.sleep(0.05)
         
         print(f"\n✅ Complete!")
         print(f"   Saved: {saved}")
@@ -135,3 +151,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
