@@ -6,6 +6,10 @@ export const metadata: Metadata = {
   title: 'Obscuriboxd | How Obscure Is Your Film Taste?',
   description: 'Discover how unique your Letterboxd film taste really is. Get your obscurity score and detailed insights into your viewing habits.',
   keywords: ['Letterboxd', 'film', 'movies', 'obscure', 'taste', 'analysis'],
+  icons: {
+    icon: '/logo1.png',
+    apple: '/logo1.png',
+  },
 }
 
 export default function RootLayout({
