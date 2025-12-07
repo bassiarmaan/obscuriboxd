@@ -315,8 +315,12 @@ def get_stats() -> Dict:
         cursor.execute("SELECT COUNT(*) as with_tmdb FROM films WHERE tmdb_id IS NOT NULL")
         with_tmdb = cursor.fetchone()['with_tmdb']
         
+        cursor.execute("SELECT COUNT(*) as with_posters FROM films WHERE poster_path IS NOT NULL AND poster_path != ''")
+        with_posters = cursor.fetchone()['with_posters']
+        
         return {
             'total_films': total,
             'films_with_watches': with_watches,
-            'films_with_tmdb': with_tmdb
+            'films_with_tmdb': with_tmdb,
+            'films_with_posters': with_posters
         }
