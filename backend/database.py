@@ -325,36 +325,53 @@ def save_film(film: Dict) -> None:
                 update_sql = f"UPDATE films SET {', '.join(update_fields)} WHERE letterboxd_slug = ?"
                 cursor.execute(update_sql, update_values)
         else:
-            # Insert new film
-            cursor.execute("""
-                INSERT INTO films (
-                    letterboxd_slug, letterboxd_id, title, year, tmdb_id,
-                    letterboxd_watches, letterboxd_likes, letterboxd_lists, letterboxd_rating,
-                    popularity, vote_count, vote_average, poster_path, original_language,
-                    runtime, budget, revenue, director, genres, production_countries
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                slug,
-                film.get('letterboxd_id'),
-                film.get('title'),
-                film.get('year'),
-                film.get('tmdb_id'),
-                film.get('letterboxd_watches'),
-                film.get('letterboxd_likes'),
-                film.get('letterboxd_lists'),
-                film.get('letterboxd_rating'),
-                film.get('popularity'),
-                film.get('vote_count'),
-                film.get('vote_average'),
-                film.get('poster_path'),
-                film.get('original_language'),
-                film.get('runtime'),
-                film.get('budget'),
-                film.get('revenue'),
-                film.get('director'),
-                genres_json,
-                countries_json
-            ))
+            # Insert new film - check which columns exist first
+            cursor.execute("PRAGMA table_info(films)")
+            columns = [row[1] for row in cursor.fetchall()]
+            
+            # Build column list based on what exists
+            insert_cols = []
+            insert_vals = []
+            placeholders = []
+            
+            # Required columns
+            insert_cols.append('letterboxd_slug')
+            insert_vals.append(slug)
+            placeholders.append('?')
+            
+            # Optional columns (only if they exist in schema)
+            optional_fields = [
+                ('letterboxd_id', film.get('letterboxd_id')),
+                ('title', film.get('title')),
+                ('year', film.get('year')),
+                ('tmdb_id', film.get('tmdb_id')),
+                ('letterboxd_watches', film.get('letterboxd_watches')),
+                ('letterboxd_likes', film.get('letterboxd_likes')),
+                ('letterboxd_lists', film.get('letterboxd_lists')),
+                ('letterboxd_rating', film.get('letterboxd_rating')),
+                ('popularity', film.get('popularity')),
+                ('vote_count', film.get('vote_count')),
+                ('vote_average', film.get('vote_average')),
+                ('poster_path', film.get('poster_path')),
+                ('original_language', film.get('original_language')),
+                ('runtime', film.get('runtime')),
+                ('budget', film.get('budget')),
+                ('revenue', film.get('revenue')),
+                ('director', film.get('director')),
+                ('genres', genres_json),
+                ('production_countries', countries_json),
+            ]
+            
+            for col_name, col_value in optional_fields:
+                if col_name in columns:
+                    insert_cols.append(col_name)
+                    insert_vals.append(col_value)
+                    placeholders.append('?')
+            
+            # Insert with dynamic column list
+            if len(insert_cols) > 1:  # At least slug + one other column
+                insert_sql = f"INSERT INTO films ({', '.join(insert_cols)}) VALUES ({', '.join(placeholders)})"
+                cursor.execute(insert_sql, insert_vals)
 
 
 def save_films(films: List[Dict]) -> None:
