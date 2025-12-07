@@ -81,11 +81,19 @@ def init_database():
             )
         """)
         
-        # Create indexes for common queries
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_letterboxd_slug ON films(letterboxd_slug)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_tmdb_id ON films(tmdb_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_title_year ON films(title, year)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_letterboxd_watches ON films(letterboxd_watches)")
+        # Create indexes for common queries (only if column exists)
+        # Check if table exists and has the column before creating index
+        cursor.execute("PRAGMA table_info(films)")
+        columns = [row[1] for row in cursor.fetchall()]
+        
+        if 'letterboxd_slug' in columns:
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_letterboxd_slug ON films(letterboxd_slug)")
+        if 'tmdb_id' in columns:
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_tmdb_id ON films(tmdb_id)")
+        if 'title' in columns and 'year' in columns:
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_title_year ON films(title, year)")
+        if 'letterboxd_watches' in columns:
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_letterboxd_watches ON films(letterboxd_watches)")
         
         conn.commit()
 
