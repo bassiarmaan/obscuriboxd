@@ -15,7 +15,7 @@ from database import init_database, save_film, get_film_by_slug, get_stats
 from scraper import get_headers, get_film_stats
 
 async def get_film_slugs_from_page(session: aiohttp.ClientSession, url: str):
-    """Extract film slugs from any Letterboxd page."""
+    """Extract film slugs from any Letterboxd page - improved version."""
     try:
         async with session.get(url, headers=get_headers()) as r:
             if r.status != 200:
@@ -24,21 +24,29 @@ async def get_film_slugs_from_page(session: aiohttp.ClientSession, url: str):
             soup = BeautifulSoup(html, 'lxml')
             slugs = []
             
-            # Find all film components
+            # Method 1: react-component with LazyPoster (most reliable)
             components = soup.select('div.react-component[data-component-class="LazyPoster"]')
             for comp in components:
                 slug = comp.get('data-item-slug', '')
-                if slug:
+                if slug and slug not in slugs:
                     slugs.append(slug)
             
-            # Also find film links
-            links = soup.select('a[href*="/film/"]')
-            for link in links:
-                href = link.get('href', '')
-                match = re.search(r'/film/([^/]+)/', href)
-                if match:
-                    slug = match.group(1)
-                    if slug not in ['page', 'popular', 'year', 'country', 'genre', 'decade'] and slug not in slugs:
+            # Method 2: Find all film links (fallback)
+            if not slugs:
+                links = soup.select('a[href*="/film/"]')
+                for link in links:
+                    href = link.get('href', '')
+                    match = re.search(r'/film/([^/]+)/', href)
+                    if match:
+                        slug = match.group(1)
+                        if slug not in ['page', 'popular', 'year', 'country', 'genre', 'decade', 'list'] and slug not in slugs:
+                            slugs.append(slug)
+            
+            # Method 3: Check for data attributes
+            if not slugs:
+                for elem in soup.select('[data-film-slug], [data-slug], [data-item-slug]'):
+                    slug = elem.get('data-film-slug') or elem.get('data-slug') or elem.get('data-item-slug')
+                    if slug and slug not in slugs and slug not in ['page', 'popular', 'year', 'country', 'genre', 'decade']:
                         slugs.append(slug)
             
             return slugs
@@ -49,15 +57,30 @@ async def scrape_by_year(session: aiohttp.ClientSession, year: int, max_pages: i
     """Scrape all films from a specific year."""
     all_slugs = set()
     page = 1
+    consecutive_empty = 0
     
     while page <= max_pages:
-        url = f"https://letterboxd.com/films/popular/year/{year}/page/{page}/"
-        slugs = await get_film_slugs_from_page(session, url)
+        # Try both URL formats
+        urls = [
+            f"https://letterboxd.com/films/popular/year/{year}/page/{page}/",
+            f"https://letterboxd.com/films/year/{year}/page/{page}/"
+        ]
+        
+        slugs = []
+        for url in urls:
+            page_slugs = await get_film_slugs_from_page(session, url)
+            if page_slugs:
+                slugs = page_slugs
+                break
         
         if not slugs:
-            break
+            consecutive_empty += 1
+            if consecutive_empty >= 2:  # Stop after 2 empty pages
+                break
+        else:
+            consecutive_empty = 0
+            all_slugs.update(slugs)
         
-        all_slugs.update(slugs)
         page += 1
         await asyncio.sleep(0.05)
     
@@ -74,7 +97,12 @@ async def scrape_by_decade(session: aiohttp.ClientSession, decade_start: int, ma
     for year in range(decade_start, decade_end + 1):
         year_slugs = await scrape_by_year(session, year, max_pages=max_pages_per_year)
         all_slugs.update(year_slugs)
+        if year_slugs:
+            print(f"      {year}: {len(year_slugs)} films", end=" | ")
         await asyncio.sleep(0.1)  # Small delay between years
+    
+    if all_slugs:
+        print()  # New line after year output
     
     return list(all_slugs)
 
