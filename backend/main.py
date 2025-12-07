@@ -88,6 +88,59 @@ async def database_stats():
     return get_stats()
 
 
+@app.get("/films")
+async def list_films(limit: int = 50, offset: int = 0):
+    """List films in the database."""
+    from database import get_db_connection
+    import json
+    
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        
+        # Get total count
+        cursor.execute("SELECT COUNT(*) as total FROM films")
+        total = cursor.fetchone()['total']
+        
+        # Get films
+        cursor.execute("""
+            SELECT 
+                title, year, letterboxd_slug, letterboxd_watches,
+                director, genres, production_countries
+            FROM films 
+            ORDER BY letterboxd_watches DESC
+            LIMIT ? OFFSET ?
+        """, (limit, offset))
+        
+        rows = cursor.fetchall()
+        films = []
+        for row in rows:
+            film = {
+                'title': row['title'],
+                'year': row['year'],
+                'slug': row['letterboxd_slug'],
+                'watches': row['letterboxd_watches'],
+                'director': row['director'],
+            }
+            if row['genres']:
+                try:
+                    film['genres'] = json.loads(row['genres'])
+                except:
+                    film['genres'] = []
+            if row['production_countries']:
+                try:
+                    film['countries'] = json.loads(row['production_countries'])
+                except:
+                    film['countries'] = []
+            films.append(film)
+        
+        return {
+            'total': total,
+            'limit': limit,
+            'offset': offset,
+            'films': films
+        }
+
+
 @app.post("/analyze", response_model=AnalyzeResponse)
 async def analyze_user(request: AnalyzeRequest):
     """
