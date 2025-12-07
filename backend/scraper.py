@@ -112,10 +112,16 @@ async def get_user_films(username: str) -> list[dict]:
     MAX_FILMS_TO_SCRAPE_PER_REQUEST = int(os.getenv("MAX_FILMS_TO_SCRAPE", "100"))  # Default to 100 instead of 20
     
     if films_to_scrape:
-        # If scraping is disabled, just use films as-is (without watch counts)
+        # If scraping is disabled, use what we have from DB (even if incomplete)
         if MAX_FILMS_TO_SCRAPE_PER_REQUEST == 0:
-            print(f"📊 Found {len(films_to_scrape)} films not in database (scraping disabled on server)")
-            enriched_films.extend(films_to_scrape)
+            print(f"📊 Found {len(films_to_scrape)} films to scrape (scraping disabled on server)")
+            # Use DB data if available, even if incomplete
+            for film in films_to_scrape:
+                slug = film.get('slug')
+                if slug and slug in db_films:
+                    db_film = db_films[slug]
+                    film.update({k: v for k, v in db_film.items() if k != 'user_rating'})
+                enriched_films.append(film)
         elif len(films_to_scrape) > MAX_FILMS_TO_SCRAPE_PER_REQUEST:
             # Too many films - prioritize films not in DB, then incomplete films
             print(f"📊 Found {len(films_to_scrape)} films to scrape (limited to {MAX_FILMS_TO_SCRAPE_PER_REQUEST} per request)...")
