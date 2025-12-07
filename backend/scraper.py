@@ -114,14 +114,13 @@ async def get_film_stats(session: aiohttp.ClientSession, film: dict) -> dict:
             html = await response.text()
             stats = parse_stats_html(html)
             
-            # Also get additional details from main page if needed
-            if not stats.get('director') or not stats.get('genres'):
-                main_url = f"https://letterboxd.com/film/{slug}/"
-                async with session.get(main_url, headers=get_headers()) as main_response:
-                    if main_response.status == 200:
-                        main_html = await main_response.text()
-                        main_stats = parse_film_page(main_html)
-                        stats.update({k: v for k, v in main_stats.items() if v})
+            # Always get additional details from main page (director, genres, countries)
+            main_url = f"https://letterboxd.com/film/{slug}/"
+            async with session.get(main_url, headers=get_headers()) as main_response:
+                if main_response.status == 200:
+                    main_html = await main_response.text()
+                    main_stats = parse_film_page(main_html)
+                    stats.update({k: v for k, v in main_stats.items() if v})
             
             return stats
     except Exception as e:

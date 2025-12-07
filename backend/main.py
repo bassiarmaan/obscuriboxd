@@ -2,7 +2,6 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from scraper import get_user_films
-from tmdb import enrich_films_with_tmdb
 from calculator import calculate_obscurity_stats
 from database import init_database, get_stats
 import os
@@ -100,7 +99,7 @@ async def analyze_user(request: AnalyzeRequest):
         raise HTTPException(status_code=400, detail="Username is required")
     
     try:
-        # Step 1: Scrape user's films from Letterboxd
+        # Step 1: Scrape user's films from Letterboxd (includes watch counts, genres, director, countries)
         films = await get_user_films(username)
         
         if not films:
@@ -109,11 +108,8 @@ async def analyze_user(request: AnalyzeRequest):
                 detail=f"No films found for user '{username}'. Make sure the profile is public."
             )
         
-        # Step 2: Enrich films with TMDb data (popularity, genres, etc.)
-        enriched_films = await enrich_films_with_tmdb(films)
-        
-        # Step 3: Calculate obscurity score and stats
-        stats = calculate_obscurity_stats(enriched_films, username)
+        # Step 2: Calculate obscurity score and stats (all data comes from Letterboxd)
+        stats = calculate_obscurity_stats(films, username)
         
         return stats
         

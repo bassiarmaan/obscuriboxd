@@ -78,9 +78,9 @@ def calculate_obscurity_from_watches(watches: int) -> float:
 
 
 def get_film_obscurity(film: dict) -> tuple[float, str]:
-    """Get obscurity score for a single film."""
+    """Get obscurity score for a single film based on Letterboxd watch counts."""
     lb_watches = film.get('letterboxd_watches')
-    # Check if watches is explicitly 0 (very obscure) or None/missing
+    
     if lb_watches is not None:
         if lb_watches == 0:
             # 0 watches = 100% obscure
@@ -89,65 +89,10 @@ def get_film_obscurity(film: dict) -> tuple[float, str]:
             score = calculate_obscurity_from_watches(lb_watches)
             return score, 'letterboxd'
     
-    # If we don't have Letterboxd watch data, check TMDb popularity
-    tmdb_pop = film.get('popularity')
-    tmdb_vote_count = film.get('vote_count', 0)
-    
-    if tmdb_pop and tmdb_pop > 0:
-        # Use TMDb popularity to estimate watches
-        # Lower threshold - even films with pop > 5 might be somewhat popular
-        if tmdb_pop > 5:
-            # Film has some TMDb popularity, estimate watches
-            if tmdb_pop > 50:
-                # Popular films likely have 1M+ watches
-                estimated_watches = int(1_000_000 * (tmdb_pop / 100) ** 0.7)
-            else:
-                estimated_watches = int(30_000 * (tmdb_pop ** 0.85))
-            score = calculate_obscurity_from_watches(estimated_watches)
-            return score, 'tmdb'
-        else:
-            # Very low TMDb popularity (pop <= 5) + no watch data = assume very obscure
-            # But not 100% - could still be somewhat known (90-95%)
-            return 92.0, 'tmdb_low'
-    
-    # Check vote_count as fallback - if film has many votes, it's probably popular
-    if tmdb_vote_count and tmdb_vote_count > 100:
-        # Film has significant votes but no popularity score - estimate from votes
-        # Rough: 1000 votes ≈ 50K watches, 10000 votes ≈ 500K watches
-        estimated_watches = int(50 * (tmdb_vote_count ** 0.8))
-        score = calculate_obscurity_from_watches(estimated_watches)
-        return score, 'tmdb_votes'
-    
-    # If no TMDb data at all (film not in TMDb or no popularity/votes)
-    # This could be:
-    # 1. Short films/obscure docs (100% obscure)
-    # 2. Popular films that failed TMDb matching (shouldn't be 100%)
-    # Check if film has other TMDb indicators (poster, genres, etc.)
-    if film.get('tmdb_id') or film.get('poster_path') or film.get('genres'):
-        # Film was matched to TMDb but has no popularity/votes
-        # This could be a matching issue or truly obscure
-        # Check vote_average as another indicator
-        vote_avg = film.get('vote_average', 0)
-        if vote_avg > 6.0:  # Decent rating suggests it's known
-            # Assume moderately popular (50-60% obscure)
-            return 55.0, 'tmdb_no_pop'
-        else:
-            # Low rating or no rating - likely obscure but in TMDb
-            return 85.0, 'tmdb_no_pop'
-    
-    # No TMDb data at all - film wasn't matched to TMDb
-    # This could be:
-    # 1. Truly obscure (short films, docs, etc.) - 100% obscure
-    # 2. Popular film that failed TMDb matching - shouldn't be 100%
-    # Check title for common patterns that suggest it might be popular
-    title = film.get('title', '').lower()
-    # If title contains common words or is very short, might be obscure
-    # Otherwise, assume it might be a matching failure and be conservative
-    if len(title) < 5 or any(word in title for word in ['short', 'doc', 'experimental']):
-        return 100.0, 'none'
-    else:
-        # Could be a matching failure - assume moderately obscure (not 100%)
-        return 80.0, 'none'
+    # If we don't have watch data, this shouldn't happen with our new scraper
+    # But handle it gracefully - assume moderately obscure
+    # This could happen if the stats endpoint fails for a specific film
+    return 75.0, 'missing_data'
 
 
 def calculate_obscurity_stats(films: list[dict], username: str) -> dict:
@@ -225,9 +170,7 @@ def calculate_obscurity_stats(films: list[dict], username: str) -> dict:
             "title": f.get('title'),
             "year": f.get('year'),
             "watches": f.get('letterboxd_watches'),
-            "popularity": round(f.get('popularity', 0), 1) if f.get('popularity') else None,
             "director": f.get('director'),
-            "poster_path": f.get('poster_path'),
         }
         for f, score, source in films_with_scores[:5]
     ]
@@ -237,9 +180,7 @@ def calculate_obscurity_stats(films: list[dict], username: str) -> dict:
             "title": f.get('title'),
             "year": f.get('year'),
             "watches": f.get('letterboxd_watches'),
-            "popularity": round(f.get('popularity', 0), 1) if f.get('popularity') else None,
             "director": f.get('director'),
-            "poster_path": f.get('poster_path'),
         }
         for f, score, source in films_with_scores[-5:][::-1]
     ]
@@ -261,9 +202,7 @@ def calculate_obscurity_stats(films: list[dict], username: str) -> dict:
                 "title": film.get('title'),
                 "year": film.get('year'),
                 "watches": film.get('letterboxd_watches'),
-                "popularity": round(film.get('popularity', 0), 1) if film.get('popularity') else None,
                 "director": film.get('director'),
-                "poster_path": film.get('poster_path'),
                 "obscurity_score": round(score, 1),
             })
     
