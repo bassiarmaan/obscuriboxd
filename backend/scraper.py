@@ -12,6 +12,13 @@ import os
 from database import save_films, get_films_by_slugs
 from aiohttp import ClientTimeout
 
+# Import TMDb functions for poster fetching
+try:
+    from tmdb import search_film
+    TMDB_AVAILABLE = True
+except:
+    TMDB_AVAILABLE = False
+
 
 async def get_user_films(username: str) -> list[dict]:
     """
@@ -159,6 +166,7 @@ async def get_film_stats(session: aiohttp.ClientSession, film: dict, retries: in
     Get Letterboxd watch count from the CSI stats endpoint.
     This is the REAL source of watch counts.
     Includes retry logic for connection errors.
+    Also fetches TMDb poster image.
     """
     slug = film.get('slug', '')
     if not slug:
@@ -186,6 +194,12 @@ async def get_film_stats(session: aiohttp.ClientSession, film: dict, retries: in
                         main_stats = parse_film_page(main_html)
                         stats.update({k: v for k, v in main_stats.items() if v})
                 
+                # Get TMDb poster if we don't have one from Letterboxd
+                if stats.get('title') and stats.get('year') and not stats.get('poster_path'):
+                    tmdb_poster = await get_tmdb_poster(stats.get('title'), stats.get('year'))
+                    if tmdb_poster:
+                        stats['poster_path'] = tmdb_poster
+                
                 return stats
         except (aiohttp.ClientError, asyncio.TimeoutError, ConnectionError, OSError) as e:
             # Retry on connection errors
@@ -199,6 +213,28 @@ async def get_film_stats(session: aiohttp.ClientSession, film: dict, retries: in
             return {}
     
     return {}
+
+
+async def get_tmdb_poster(title: str, year: int) -> str | None:
+    """Get TMDb poster path for a film. Returns just the path (e.g., '/abc123.jpg')."""
+    if not TMDB_AVAILABLE:
+        return None
+    
+    import os
+    from tmdb import TMDB_API_KEY
+    
+    if not TMDB_API_KEY:
+        return None
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            tmdb_data = await search_film(session, title, year, None)
+            if tmdb_data and tmdb_data.get('poster_path'):
+                return tmdb_data.get('poster_path')
+    except:
+        pass
+    
+    return None
 
 
 def parse_stats_html(html: str) -> dict:
@@ -278,6 +314,13 @@ def parse_film_page(html: str) -> dict:
             year_match = re.search(r'(\d{4})', year_text)
             if year_match:
                 stats['year'] = int(year_match.group(1))
+    
+    # Get poster image from og:image (Letterboxd poster)
+    og_image = soup.select_one('meta[property="og:image"]')
+    if og_image:
+        image_url = og_image.get('content', '')
+        if image_url:
+            stats['poster_path'] = image_url
     
     # Get director
     director_link = soup.select_one('a[href*="/director/"]')

@@ -27,8 +27,11 @@ function formatWatches(watches: number): string {
 }
 
 export default function FilmCard({ film, rank, type }: Props) {
+  // Support both TMDb and Letterboxd poster URLs
   const posterUrl = film.poster_path
-    ? `https://image.tmdb.org/t/p/w300${film.poster_path}`
+    ? film.poster_path.startsWith('http')
+      ? film.poster_path  // Already a full URL (Letterboxd)
+      : `https://image.tmdb.org/t/p/w300${film.poster_path}`  // TMDb path (starts with /)
     : null
 
   return (

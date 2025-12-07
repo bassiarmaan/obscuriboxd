@@ -79,8 +79,11 @@ export default function FilmsByDecade({ filmsByDecade, decadeBreakdown }: Props)
           {selectedFilms.length > 0 ? (
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3">
               {selectedFilms.map((film, index) => {
+                // Support both TMDb and Letterboxd poster URLs
                 const posterUrl = film.poster_path
-                  ? `https://image.tmdb.org/t/p/w300${film.poster_path}`
+                  ? film.poster_path.startsWith('http')
+                    ? film.poster_path  // Already a full URL (Letterboxd)
+                    : `https://image.tmdb.org/t/p/w300${film.poster_path}`  // TMDb path (starts with /)
                   : null
 
                 return (
