@@ -12,7 +12,7 @@ from pathlib import Path
 
 # Database file path
 # Defaults to backend/films.db, but can be overridden with DB_PATH env variable
-_default_db_path = os.path.join(os.path.dirname(__file__), "films.db")
+_default_db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "films.db")
 DB_PATH = os.getenv("DB_PATH", _default_db_path)
 
 
@@ -194,52 +194,75 @@ def save_film(film: Dict) -> None:
         exists = cursor.fetchone()
         
         if exists:
-            # Update existing film
-            cursor.execute("""
-                UPDATE films SET
-                    letterboxd_id = ?,
-                    title = ?,
-                    year = ?,
-                    tmdb_id = ?,
-                    letterboxd_watches = ?,
-                    letterboxd_likes = ?,
-                    letterboxd_lists = ?,
-                    letterboxd_rating = ?,
-                    popularity = ?,
-                    vote_count = ?,
-                    vote_average = ?,
-                    poster_path = ?,
-                    original_language = ?,
-                    runtime = ?,
-                    budget = ?,
-                    revenue = ?,
-                    director = ?,
-                    genres = ?,
-                    production_countries = ?,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE letterboxd_slug = ?
-            """, (
-                film.get('letterboxd_id'),
-                film.get('title'),
-                film.get('year'),
-                film.get('tmdb_id'),
-                film.get('letterboxd_watches'),
-                film.get('letterboxd_likes'),
-                film.get('letterboxd_lists'),
-                film.get('letterboxd_rating'),
-                film.get('popularity'),
-                film.get('vote_count'),
-                film.get('vote_average'),
-                film.get('poster_path'),
-                film.get('original_language'),
-                film.get('runtime'),
-                film.get('budget'),
-                film.get('revenue'),
-                film.get('director'),
-                genres_json,
-                countries_json,
-                slug
-            ))
+            # Update existing film - only update fields that are provided (not None)
+            update_fields = []
+            update_values = []
+            
+            if 'letterboxd_id' in film:
+                update_fields.append('letterboxd_id = ?')
+                update_values.append(film.get('letterboxd_id'))
+            if 'title' in film and film.get('title'):
+                update_fields.append('title = ?')
+                update_values.append(film.get('title'))
+            if 'year' in film and film.get('year') is not None:
+                update_fields.append('year = ?')
+                update_values.append(film.get('year'))
+            if 'tmdb_id' in film:
+                update_fields.append('tmdb_id = ?')
+                update_values.append(film.get('tmdb_id'))
+            if 'letterboxd_watches' in film and film.get('letterboxd_watches') is not None:
+                update_fields.append('letterboxd_watches = ?')
+                update_values.append(film.get('letterboxd_watches'))
+            if 'letterboxd_likes' in film and film.get('letterboxd_likes') is not None:
+                update_fields.append('letterboxd_likes = ?')
+                update_values.append(film.get('letterboxd_likes'))
+            if 'letterboxd_lists' in film and film.get('letterboxd_lists') is not None:
+                update_fields.append('letterboxd_lists = ?')
+                update_values.append(film.get('letterboxd_lists'))
+            if 'letterboxd_rating' in film and film.get('letterboxd_rating') is not None:
+                update_fields.append('letterboxd_rating = ?')
+                update_values.append(film.get('letterboxd_rating'))
+            if 'popularity' in film:
+                update_fields.append('popularity = ?')
+                update_values.append(film.get('popularity'))
+            if 'vote_count' in film:
+                update_fields.append('vote_count = ?')
+                update_values.append(film.get('vote_count'))
+            if 'vote_average' in film:
+                update_fields.append('vote_average = ?')
+                update_values.append(film.get('vote_average'))
+            if 'poster_path' in film:
+                update_fields.append('poster_path = ?')
+                update_values.append(film.get('poster_path'))
+            if 'original_language' in film:
+                update_fields.append('original_language = ?')
+                update_values.append(film.get('original_language'))
+            if 'runtime' in film:
+                update_fields.append('runtime = ?')
+                update_values.append(film.get('runtime'))
+            if 'budget' in film:
+                update_fields.append('budget = ?')
+                update_values.append(film.get('budget'))
+            if 'revenue' in film:
+                update_fields.append('revenue = ?')
+                update_values.append(film.get('revenue'))
+            if 'director' in film and film.get('director'):
+                update_fields.append('director = ?')
+                update_values.append(film.get('director'))
+            if 'genres' in film:
+                update_fields.append('genres = ?')
+                update_values.append(genres_json)
+            if 'production_countries' in film:
+                update_fields.append('production_countries = ?')
+                update_values.append(countries_json)
+            
+            # Always update the updated_at timestamp
+            update_fields.append('updated_at = CURRENT_TIMESTAMP')
+            update_values.append(slug)
+            
+            if update_fields:
+                update_sql = f"UPDATE films SET {', '.join(update_fields)} WHERE letterboxd_slug = ?"
+                cursor.execute(update_sql, update_values)
         else:
             # Insert new film
             cursor.execute("""

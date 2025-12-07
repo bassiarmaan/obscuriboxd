@@ -8,7 +8,7 @@ import asyncio
 import aiohttp
 from bs4 import BeautifulSoup
 import re
-from database import save_films
+from database import save_films, get_films_by_slugs
 
 
 async def get_user_films(username: str) -> list[dict]:
@@ -56,14 +56,36 @@ async def get_user_films(username: str) -> list[dict]:
             except aiohttp.ClientError as e:
                 raise Exception(f"Error fetching data: {str(e)}")
     
-    # Fetch Letterboxd watch counts for ALL films (not just a sample)
-    films = await enrich_with_letterboxd_stats(films)
+    # Check database first for existing films
+    slugs = [f.get('slug') for f in films if f.get('slug')]
+    db_films = get_films_by_slugs(slugs)
     
-    # Save films to database for future use
-    if films:
-        save_films(films)
+    # Merge database data with user's film list
+    enriched_films = []
+    films_to_scrape = []
     
-    return films
+    for film in films:
+        slug = film.get('slug')
+        if slug and slug in db_films:
+            # Film exists in database - use DB data but keep user rating
+            db_film = db_films[slug]
+            film.update({k: v for k, v in db_film.items() if k != 'user_rating'})
+            enriched_films.append(film)
+        else:
+            # Film not in DB - need to scrape
+            films_to_scrape.append(film)
+    
+    # Scrape only films not in database
+    if films_to_scrape:
+        print(f"📊 Found {len(films_to_scrape)} films not in database, scraping...")
+        scraped_films = await enrich_with_letterboxd_stats(films_to_scrape)
+        enriched_films.extend(scraped_films)
+        # Save newly scraped films to database
+        save_films(scraped_films)
+    else:
+        print(f"✅ All {len(films)} films found in database!")
+    
+    return enriched_films
 
 
 async def enrich_with_letterboxd_stats(films: list[dict]) -> list[dict]:
@@ -168,9 +190,43 @@ def parse_stats_html(html: str) -> dict:
 
 
 def parse_film_page(html: str) -> dict:
-    """Parse director and genres from the main film page."""
+    """Parse title, year, director, genres, and countries from the main film page."""
     soup = BeautifulSoup(html, 'lxml')
     stats = {}
+    
+    # Get title and year from og:title meta tag (e.g., "Film Name (2024)")
+    og_title = soup.select_one('meta[property="og:title"]')
+    if og_title:
+        title_content = og_title.get('content', '')
+        # Extract year from title like "Film Name (2024)"
+        year_match = re.search(r'\((\d{4})\)', title_content)
+        if year_match:
+            stats['year'] = int(year_match.group(1))
+            stats['title'] = re.sub(r'\s*\(\d{4}\)\s*$', '', title_content).strip()
+        else:
+            stats['title'] = title_content.strip()
+    
+    # Also try h1.headline-1 as fallback
+    if not stats.get('title'):
+        h1 = soup.select_one('h1.headline-1 .name, h1.headline-1')
+        if h1:
+            title_text = h1.get_text(strip=True)
+            year_match = re.search(r'\((\d{4})\)', title_text)
+            if year_match:
+                stats['year'] = int(year_match.group(1))
+                stats['title'] = re.sub(r'\s*\(\d{4}\)\s*$', '', title_text).strip()
+            else:
+                stats['title'] = title_text
+    
+    # Get year from release date if not found in title
+    if not stats.get('year'):
+        # Try to find year in various places
+        year_elem = soup.select_one('a[href*="/films/year/"]')
+        if year_elem:
+            year_text = year_elem.get_text(strip=True)
+            year_match = re.search(r'(\d{4})', year_text)
+            if year_match:
+                stats['year'] = int(year_match.group(1))
     
     # Get director
     director_link = soup.select_one('a[href*="/director/"]')
