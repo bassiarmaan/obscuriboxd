@@ -86,23 +86,32 @@ async def scrape_by_year(session: aiohttp.ClientSession, year: int, max_pages: i
     
     return list(all_slugs)
 
-async def scrape_by_decade(session: aiohttp.ClientSession, decade_start: int, max_pages_per_year: int = 20):
-    """Scrape all films from a decade by iterating through years."""
+async def scrape_by_decade(session: aiohttp.ClientSession, decade_start: int, max_pages: int = 100):
+    """Scrape all films from a decade using the decade URL format."""
     all_slugs = set()
-    decade_end = decade_start + 9
+    decade_str = f"{decade_start}s"  # e.g., "2020s", "1990s"
+    page = 1
+    consecutive_empty = 0
     
-    print(f"   📅 Decade {decade_start}s ({decade_start}-{decade_end})...")
+    print(f"   📅 Decade {decade_str}...")
     
-    # Scrape each year in the decade
-    for year in range(decade_start, decade_end + 1):
-        year_slugs = await scrape_by_year(session, year, max_pages=max_pages_per_year)
-        all_slugs.update(year_slugs)
-        if year_slugs:
-            print(f"      {year}: {len(year_slugs)} films", end=" | ")
-        await asyncio.sleep(0.1)  # Small delay between years
-    
-    if all_slugs:
-        print()  # New line after year output
+    while page <= max_pages:
+        # Use the decade URL format: /films/popular/decade/2020s/
+        url = f"https://letterboxd.com/films/popular/decade/{decade_str}/page/{page}/"
+        slugs = await get_film_slugs_from_page(session, url)
+        
+        if not slugs:
+            consecutive_empty += 1
+            if consecutive_empty >= 2:  # Stop after 2 empty pages
+                break
+        else:
+            consecutive_empty = 0
+            all_slugs.update(slugs)
+            if page % 10 == 0:
+                print(f"      Page {page}: {len(slugs)} films (total: {len(all_slugs)})")
+        
+        page += 1
+        await asyncio.sleep(0.05)
     
     return list(all_slugs)
 
@@ -173,15 +182,16 @@ async def main():
     async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
         # Strategy 1: Scrape by decade (most comprehensive and efficient)
         print("📅 Strategy 1: Scraping films by decade (1900s-2020s)...")
+        print("   Using decade URLs: /films/popular/decade/{decade}s/\n")
         
         # Decades: 1900s, 1910s, 1920s, ..., 2020s
         decades = [1900, 1910, 1920, 1930, 1940, 1950, 1960, 1970, 1980, 1990, 2000, 2010, 2020]
         
         for i, decade_start in enumerate(decades, 1):
-            decade_slugs = await scrape_by_decade(session, decade_start, max_pages_per_year=30)
+            decade_slugs = await scrape_by_decade(session, decade_start, max_pages=200)
             all_slugs.update(decade_slugs)
             
-            print(f"   ✅ {decade_start}s: {len(decade_slugs)} films (total: {len(all_slugs)} unique)")
+            print(f"   ✅ {decade_start}s: {len(decade_slugs)} films (total: {len(all_slugs)} unique)\n")
             await asyncio.sleep(0.2)  # Small delay between decades
         
         print(f"✅ Decade scraping complete: {len(all_slugs)} unique films\n")
