@@ -10,7 +10,7 @@ services:
       - key: FRONTEND_URL
         sync: false
       - key: MAX_FILMS_TO_SCRAPE
-        value: "50"  # Scrape up to 50 films per request (for posters and missing data)
+        value: "100"  # Scrape up to 100 films per request (for posters and missing data)
 
 
 
