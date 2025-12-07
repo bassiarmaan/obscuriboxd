@@ -8,6 +8,7 @@ import asyncio
 import aiohttp
 from bs4 import BeautifulSoup
 import re
+import os
 from database import save_films, get_films_by_slugs
 from aiohttp import ClientTimeout
 
@@ -78,13 +79,30 @@ async def get_user_films(username: str) -> list[dict]:
             # Film not in DB - need to scrape
             films_to_scrape.append(film)
     
-    # Scrape only films not in database
+    # Scrape only films not in database, but limit to prevent server overload
+    # On production (Render), only scrape a small batch per request to avoid crashes
+    MAX_FILMS_TO_SCRAPE_PER_REQUEST = int(os.getenv("MAX_FILMS_TO_SCRAPE", "20"))
+    
     if films_to_scrape:
-        print(f"📊 Found {len(films_to_scrape)} films not in database, scraping...")
-        scraped_films = await enrich_with_letterboxd_stats(films_to_scrape)
-        enriched_films.extend(scraped_films)
-        # Save newly scraped films to database
-        save_films(scraped_films)
+        if len(films_to_scrape) > MAX_FILMS_TO_SCRAPE_PER_REQUEST:
+            # Too many films - only scrape a sample and use defaults for the rest
+            print(f"📊 Found {len(films_to_scrape)} films not in database, scraping {MAX_FILMS_TO_SCRAPE_PER_REQUEST} (limited to prevent overload)...")
+            films_to_scrape_now = films_to_scrape[:MAX_FILMS_TO_SCRAPE_PER_REQUEST]
+            films_to_skip = films_to_scrape[MAX_FILMS_TO_SCRAPE_PER_REQUEST:]
+            
+            # Scrape the limited batch
+            scraped_films = await enrich_with_letterboxd_stats(films_to_scrape_now)
+            enriched_films.extend(scraped_films)
+            save_films(scraped_films)
+            
+            # For the rest, use them as-is (without watch counts) - they'll be scraped later
+            enriched_films.extend(films_to_skip)
+        else:
+            # Small number of films - safe to scrape all
+            print(f"📊 Found {len(films_to_scrape)} films not in database, scraping...")
+            scraped_films = await enrich_with_letterboxd_stats(films_to_scrape)
+            enriched_films.extend(scraped_films)
+            save_films(scraped_films)
     else:
         print(f"✅ All {len(films)} films found in database!")
     
