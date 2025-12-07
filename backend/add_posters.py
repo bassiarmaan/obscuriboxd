@@ -31,34 +31,48 @@ async def add_posters_to_films():
     
     print(f"📊 Found {len(films_to_update)} films without posters\n")
     
+    # Process in batches for faster scraping
+    batch_size = 30
     timeout = ClientTimeout(total=10, connect=5)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        updated = 0
-        failed = 0
+    
+    updated = 0
+    failed = 0
+    
+    async def process_film(film_row):
+        nonlocal updated, failed
+        slug = film_row['letterboxd_slug']
+        title = film_row['title']
+        year = film_row['year']
         
-        for i, film_row in enumerate(films_to_update, 1):
-            slug = film_row['letterboxd_slug']
-            title = film_row['title']
-            year = film_row['year']
-            
-            if i % 50 == 0:
-                print(f"   Progress: {i}/{len(films_to_update)} (updated: {updated}, failed: {failed})")
-            
-            try:
-                poster_path = await get_tmdb_poster(title, year)
-                if poster_path:
-                    film = {
-                        'slug': slug,
-                        'poster_path': poster_path
-                    }
-                    save_film(film)
-                    updated += 1
-                else:
-                    failed += 1
-            except Exception as e:
+        try:
+            poster_path = await get_tmdb_poster(title, year)
+            if poster_path:
+                film = {
+                    'slug': slug,
+                    'poster_path': poster_path
+                }
+                save_film(film)
+                updated += 1
+                return True
+            else:
                 failed += 1
-            
-            await asyncio.sleep(0.2)  # Rate limiting
+                return False
+        except Exception as e:
+            failed += 1
+            return False
+    
+    # Process in batches
+    for i in range(0, len(films_to_update), batch_size):
+        batch = films_to_update[i:i + batch_size]
+        tasks = [process_film(film_row) for film_row in batch]
+        await asyncio.gather(*tasks, return_exceptions=True)
+        
+        if (i + batch_size) % 100 == 0 or i + batch_size >= len(films_to_update):
+            print(f"   Progress: {min(i + batch_size, len(films_to_update))}/{len(films_to_update)} (updated: {updated}, failed: {failed})")
+        
+        # Small delay between batches
+        if i + batch_size < len(films_to_update):
+            await asyncio.sleep(0.1)  # Reduced from 0.2 per film
     
     print(f"\n✅ Complete!")
     print(f"   Updated: {updated}")

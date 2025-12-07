@@ -63,7 +63,7 @@ async def get_user_films(username: str) -> list[dict]:
                     page += 1
                     
                     # Rate limiting - be nice to Letterboxd
-                    await asyncio.sleep(0.3)
+                    await asyncio.sleep(0.1)  # Reduced delay
                     
             except aiohttp.ClientError as e:
                 raise Exception(f"Error fetching data: {str(e)}")
@@ -137,15 +137,16 @@ async def enrich_with_letterboxd_stats(films: list[dict]) -> list[dict]:
         return films
     
     # Adjust batch size based on total films to avoid overwhelming
+    # Increased batch sizes and reduced delays for faster scraping
     if len(films) > 1000:
-        batch_size = 5  # Smaller batches for very large collections
-        delay = 0.5
+        batch_size = 20  # Increased from 5
+        delay = 0.1  # Reduced from 0.5
     elif len(films) > 500:
-        batch_size = 8
-        delay = 0.4
+        batch_size = 25  # Increased from 8
+        delay = 0.1  # Reduced from 0.4
     else:
-        batch_size = 10
-        delay = 0.3
+        batch_size = 30  # Increased from 10
+        delay = 0.1  # Reduced from 0.3
     
     # Create session with timeout settings
     timeout = aiohttp.ClientTimeout(total=30, connect=10)
@@ -210,7 +211,7 @@ async def get_film_stats(session: aiohttp.ClientSession, film: dict, retries: in
         except (aiohttp.ClientError, asyncio.TimeoutError, ConnectionError, OSError) as e:
             # Retry on connection errors
             if attempt < retries - 1:
-                await asyncio.sleep(0.5 * (attempt + 1))  # Exponential backoff
+                await asyncio.sleep(0.2 * (attempt + 1))  # Reduced exponential backoff
                 continue
             # Don't print error on last attempt - too noisy
             return {}
