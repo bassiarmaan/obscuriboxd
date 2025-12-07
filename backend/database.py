@@ -41,48 +41,97 @@ def init_database():
     with get_db_connection() as conn:
         cursor = conn.cursor()
         
+        # Check if films table exists and get its schema
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='films'")
+        table_exists = cursor.fetchone() is not None
+        
+        if table_exists:
+            # Get existing columns
+            cursor.execute("PRAGMA table_info(films)")
+            existing_columns = {row[1]: row for row in cursor.fetchall()}
+        else:
+            existing_columns = {}
+        
         # Films table - stores all film metadata
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS films (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                letterboxd_slug TEXT UNIQUE NOT NULL,
-                letterboxd_id TEXT,
-                title TEXT NOT NULL,
-                year INTEGER,
-                tmdb_id INTEGER,
-                
-                -- Letterboxd data
-                letterboxd_watches INTEGER,
-                letterboxd_likes INTEGER,
-                letterboxd_lists INTEGER,
-                letterboxd_rating REAL,
-                
-                -- TMDb data
-                popularity REAL,
-                vote_count INTEGER,
-                vote_average REAL,
-                poster_path TEXT,
-                original_language TEXT,
-                runtime INTEGER,
-                budget INTEGER,
-                revenue INTEGER,
-                
-                -- Metadata
-                director TEXT,
-                genres TEXT,  -- JSON array of genre names
-                production_countries TEXT,  -- JSON array of country names
-                
-                -- Timestamps
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                
-                -- Indexes for fast lookups
-                UNIQUE(letterboxd_slug)
-            )
-        """)
+        # Only create if it doesn't exist, or add missing columns if it does
+        if not table_exists:
+            cursor.execute("""
+                CREATE TABLE films (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    letterboxd_slug TEXT UNIQUE NOT NULL,
+                    letterboxd_id TEXT,
+                    title TEXT NOT NULL,
+                    year INTEGER,
+                    tmdb_id INTEGER,
+                    
+                    -- Letterboxd data
+                    letterboxd_watches INTEGER,
+                    letterboxd_likes INTEGER,
+                    letterboxd_lists INTEGER,
+                    letterboxd_rating REAL,
+                    
+                    -- TMDb data
+                    popularity REAL,
+                    vote_count INTEGER,
+                    vote_average REAL,
+                    poster_path TEXT,
+                    original_language TEXT,
+                    runtime INTEGER,
+                    budget INTEGER,
+                    revenue INTEGER,
+                    
+                    -- Metadata
+                    director TEXT,
+                    genres TEXT,  -- JSON array of genre names
+                    production_countries TEXT,  -- JSON array of country names
+                    
+                    -- Timestamps
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    
+                    -- Indexes for fast lookups
+                    UNIQUE(letterboxd_slug)
+                )
+            """)
+        else:
+            # Table exists - check and add missing columns if needed
+            required_columns = {
+                'letterboxd_slug': 'TEXT UNIQUE NOT NULL',
+                'letterboxd_id': 'TEXT',
+                'title': 'TEXT NOT NULL',
+                'year': 'INTEGER',
+                'tmdb_id': 'INTEGER',
+                'letterboxd_watches': 'INTEGER',
+                'letterboxd_likes': 'INTEGER',
+                'letterboxd_lists': 'INTEGER',
+                'letterboxd_rating': 'REAL',
+                'popularity': 'REAL',
+                'vote_count': 'INTEGER',
+                'vote_average': 'REAL',
+                'poster_path': 'TEXT',
+                'original_language': 'TEXT',
+                'runtime': 'INTEGER',
+                'budget': 'INTEGER',
+                'revenue': 'INTEGER',
+                'director': 'TEXT',
+                'genres': 'TEXT',
+                'production_countries': 'TEXT',
+                'created_at': 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP',
+                'updated_at': 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP',
+            }
+            
+            for col_name, col_def in required_columns.items():
+                if col_name not in existing_columns:
+                    try:
+                        # SQLite doesn't support ALTER TABLE ADD COLUMN with constraints easily
+                        # So we'll add without NOT NULL constraint if needed
+                        safe_def = col_def.replace(' NOT NULL', '').replace(' UNIQUE', '')
+                        cursor.execute(f"ALTER TABLE films ADD COLUMN {col_name} {safe_def}")
+                    except sqlite3.OperationalError:
+                        # Column might already exist or other issue - skip
+                        pass
         
         # Create indexes for common queries (only if column exists)
-        # Check if table exists and has the column before creating index
         cursor.execute("PRAGMA table_info(films)")
         columns = [row[1] for row in cursor.fetchall()]
         
