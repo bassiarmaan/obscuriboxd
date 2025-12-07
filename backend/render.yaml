@@ -9,6 +9,8 @@ services:
         sync: false
       - key: FRONTEND_URL
         sync: false
+      - key: MAX_FILMS_TO_SCRAPE
+        value: "0"  # Disable scraping on Render - use local scripts instead
 
 
 
