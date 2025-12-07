@@ -10,7 +10,7 @@ services:
       - key: FRONTEND_URL
         sync: false
       - key: MAX_FILMS_TO_SCRAPE
-        value: "0"  # Disable scraping on Render - use local scripts instead
+        value: "10"  # Scrape 10 films per request (for posters and missing data)
 
 
 
