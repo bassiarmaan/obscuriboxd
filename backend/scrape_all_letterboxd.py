@@ -63,6 +63,21 @@ async def scrape_by_year(session: aiohttp.ClientSession, year: int, max_pages: i
     
     return list(all_slugs)
 
+async def scrape_by_decade(session: aiohttp.ClientSession, decade_start: int, max_pages_per_year: int = 20):
+    """Scrape all films from a decade by iterating through years."""
+    all_slugs = set()
+    decade_end = decade_start + 9
+    
+    print(f"   📅 Decade {decade_start}s ({decade_start}-{decade_end})...")
+    
+    # Scrape each year in the decade
+    for year in range(decade_start, decade_end + 1):
+        year_slugs = await scrape_by_year(session, year, max_pages=max_pages_per_year)
+        all_slugs.update(year_slugs)
+        await asyncio.sleep(0.1)  # Small delay between years
+    
+    return list(all_slugs)
+
 async def scrape_from_user(session: aiohttp.ClientSession, username: str):
     """Get all film slugs from a user's profile."""
     slugs = []
@@ -128,18 +143,20 @@ async def main():
     connector = aiohttp.TCPConnector(limit=100, limit_per_host=50)
     
     async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
-        # Strategy 1: Scrape by year (most comprehensive)
-        print("📅 Strategy 1: Scraping films by year (1900-2025)...")
-        years = list(range(1900, 2026))  # 1900 to 2025
+        # Strategy 1: Scrape by decade (most comprehensive and efficient)
+        print("📅 Strategy 1: Scraping films by decade (1900s-2020s)...")
         
-        for i, year in enumerate(years, 1):
-            year_slugs = await scrape_by_year(session, year, max_pages=50)
-            all_slugs.update(year_slugs)
+        # Decades: 1900s, 1910s, 1920s, ..., 2020s
+        decades = [1900, 1910, 1920, 1930, 1940, 1950, 1960, 1970, 1980, 1990, 2000, 2010, 2020]
+        
+        for i, decade_start in enumerate(decades, 1):
+            decade_slugs = await scrape_by_decade(session, decade_start, max_pages_per_year=30)
+            all_slugs.update(decade_slugs)
             
-            if i % 10 == 0 or i == len(years):
-                print(f"   Years {years[0]}-{year}: {len(all_slugs)} unique films found")
+            print(f"   ✅ {decade_start}s: {len(decade_slugs)} films (total: {len(all_slugs)} unique)")
+            await asyncio.sleep(0.2)  # Small delay between decades
         
-        print(f"✅ Year scraping complete: {len(all_slugs)} unique films\n")
+        print(f"✅ Decade scraping complete: {len(all_slugs)} unique films\n")
         
         # Strategy 2: Popular users with large collections
         print("👥 Strategy 2: Scraping from popular users...")
