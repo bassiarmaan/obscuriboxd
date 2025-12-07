@@ -313,8 +313,12 @@ def save_film(film: Dict) -> None:
                 update_fields.append('production_countries = ?')
                 update_values.append(countries_json)
             
-            # Always update the updated_at timestamp
-            update_fields.append('updated_at = CURRENT_TIMESTAMP')
+            # Always update the updated_at timestamp (if column exists)
+            # Check if column exists before adding it
+            cursor.execute("PRAGMA table_info(films)")
+            columns = [row[1] for row in cursor.fetchall()]
+            if 'updated_at' in columns:
+                update_fields.append('updated_at = CURRENT_TIMESTAMP')
             update_values.append(slug)
             
             if update_fields:
