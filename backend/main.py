@@ -39,6 +39,10 @@ app.add_middleware(
 # Initialize database on startup
 @app.on_event("startup")
 async def startup_event():
+    # Try to download database from GitHub if it doesn't exist
+    from download_db import download_database_from_github
+    download_database_from_github()
+    
     init_database()
     stats = get_stats()
     print(f"Database initialized. Total films: {stats['total_films']}")
