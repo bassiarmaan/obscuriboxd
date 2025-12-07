@@ -1,24 +1,26 @@
 """
 Letterboxd scraper using web scraping techniques.
 Now fetches watch counts from the CSI stats endpoint.
+Saves films to database for future use.
 """
 
 import asyncio
 import aiohttp
 from bs4 import BeautifulSoup
 import re
+from database import save_films
 
 
 async def get_user_films(username: str) -> list[dict]:
     """
     Scrape all films from a Letterboxd user's profile.
     Returns a list of films with title, year, rating, and letterboxd URL.
-    Uses dynamic page limit: starts low, increases if user has many films.
+    NO PAGE LIMITS - scrapes all pages to get complete film list.
     """
     films = []
     page = 1
-    initial_limit = 10  # Start with lower limit for most users
-    max_limit = 25  # Maximum limit for users with huge collections
+    consecutive_empty_pages = 0
+    max_empty_pages = 2  # Stop after 2 consecutive empty pages
     
     async with aiohttp.ClientSession() as session:
         while True:
@@ -38,34 +40,28 @@ async def get_user_films(username: str) -> list[dict]:
                     page_films = parse_films_page(html)
                     
                     if not page_films:
-                        break
+                        consecutive_empty_pages += 1
+                        if consecutive_empty_pages >= max_empty_pages:
+                            break
+                        page += 1
+                        continue
                     
+                    consecutive_empty_pages = 0  # Reset counter
                     films.extend(page_films)
                     page += 1
                     
                     # Rate limiting - be nice to Letterboxd
                     await asyncio.sleep(0.3)
                     
-                    # Dynamic limit: if user has many films, increase the limit
-                    # Check every 5 pages if we should continue
-                    if page > initial_limit:
-                        # If we've hit the initial limit, check if user has many films
-                        if len(films) > 600:  # ~60 films per page * 10 pages
-                            # User has a large collection, allow more pages
-                            if page > max_limit:
-                                break
-                        else:
-                            # Normal user, stop at initial limit
-                            break
-                    elif page > max_limit:
-                        # Safety: never exceed max limit
-                        break
-                    
             except aiohttp.ClientError as e:
                 raise Exception(f"Error fetching data: {str(e)}")
     
-    # Fetch Letterboxd watch counts for a sample of films
+    # Fetch Letterboxd watch counts for ALL films (not just a sample)
     films = await enrich_with_letterboxd_stats(films)
+    
+    # Save films to database for future use
+    if films:
+        save_films(films)
     
     return films
 
@@ -73,37 +69,27 @@ async def get_user_films(username: str) -> list[dict]:
 async def enrich_with_letterboxd_stats(films: list[dict]) -> list[dict]:
     """
     Fetch Letterboxd watch counts from the stats CSI endpoint.
-    Sample films for speed.
+    Fetches for ALL films to ensure complete data.
     """
     if not films:
         return films
     
-    # Determine which films to sample
-    if len(films) <= 30:
-        sample_indices = list(range(len(films)))
-    else:
-        # Sample evenly across the list
-        sample_size = 30
-        step = len(films) / sample_size
-        sample_indices = [int(i * step) for i in range(sample_size)]
-    
-    films_to_fetch = [(i, films[i]) for i in sample_indices]
-    
     async with aiohttp.ClientSession() as session:
-        # Process in batches
+        # Process in batches to avoid overwhelming the server
         batch_size = 10
         
-        for i in range(0, len(films_to_fetch), batch_size):
-            batch = films_to_fetch[i:i + batch_size]
-            tasks = [get_film_stats(session, film) for idx, film in batch]
+        for i in range(0, len(films), batch_size):
+            batch = films[i:i + batch_size]
+            tasks = [get_film_stats(session, film) for film in batch]
             results = await asyncio.gather(*tasks, return_exceptions=True)
             
-            for (idx, film), result in zip(batch, results):
+            for film, result in zip(batch, results):
                 if isinstance(result, dict):
-                    films[idx].update(result)
+                    film.update(result)
             
-            # Rate limiting
-            await asyncio.sleep(0.3)
+            # Rate limiting - be respectful to Letterboxd
+            if i + batch_size < len(films):  # Don't sleep after last batch
+                await asyncio.sleep(0.3)
     
     return films
 

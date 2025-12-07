@@ -43,6 +43,10 @@ build/
 .cache/
 *.cache
 
+# Database
+backend/films.db
+*.db
+
 
 
 

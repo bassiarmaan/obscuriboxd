@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from scraper import get_user_films
 from tmdb import enrich_films_with_tmdb
 from calculator import calculate_obscurity_stats
+from database import init_database, get_stats
 import os
 
 app = FastAPI(title="Obscuriboxd API", version="1.0.0")
@@ -35,6 +36,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Initialize database on startup
+@app.on_event("startup")
+async def startup_event():
+    init_database()
+    stats = get_stats()
+    print(f"Database initialized. Total films: {stats['total_films']}")
 
 
 class AnalyzeRequest(BaseModel):
@@ -73,6 +81,12 @@ async def root():
 @app.get("/health")
 async def health():
     return {"status": "healthy"}
+
+
+@app.get("/stats")
+async def database_stats():
+    """Get database statistics."""
+    return get_stats()
 
 
 @app.post("/analyze", response_model=AnalyzeResponse)

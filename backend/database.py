@@ -1,0 +1,299 @@
+"""
+Database module for storing film metadata.
+Uses SQLite for simplicity (can be upgraded to PostgreSQL for production).
+"""
+
+import sqlite3
+import json
+from typing import Optional, List, Dict
+from contextlib import contextmanager
+import os
+from pathlib import Path
+
+# Database file path
+# Defaults to backend/films.db, but can be overridden with DB_PATH env variable
+_default_db_path = os.path.join(os.path.dirname(__file__), "films.db")
+DB_PATH = os.getenv("DB_PATH", _default_db_path)
+
+
+def get_db_path() -> str:
+    """Get the database file path."""
+    return DB_PATH
+
+
+@contextmanager
+def get_db_connection():
+    """Context manager for database connections."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row  # Enable column access by name
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def init_database():
+    """Initialize the database with required tables."""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        
+        # Films table - stores all film metadata
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS films (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                letterboxd_slug TEXT UNIQUE NOT NULL,
+                letterboxd_id TEXT,
+                title TEXT NOT NULL,
+                year INTEGER,
+                tmdb_id INTEGER,
+                
+                -- Letterboxd data
+                letterboxd_watches INTEGER,
+                letterboxd_likes INTEGER,
+                letterboxd_lists INTEGER,
+                letterboxd_rating REAL,
+                
+                -- TMDb data
+                popularity REAL,
+                vote_count INTEGER,
+                vote_average REAL,
+                poster_path TEXT,
+                original_language TEXT,
+                runtime INTEGER,
+                budget INTEGER,
+                revenue INTEGER,
+                
+                -- Metadata
+                director TEXT,
+                genres TEXT,  -- JSON array of genre names
+                production_countries TEXT,  -- JSON array of country names
+                
+                -- Timestamps
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                
+                -- Indexes for fast lookups
+                UNIQUE(letterboxd_slug)
+            )
+        """)
+        
+        # Create indexes for common queries
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_letterboxd_slug ON films(letterboxd_slug)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_tmdb_id ON films(tmdb_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_title_year ON films(title, year)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_letterboxd_watches ON films(letterboxd_watches)")
+        
+        conn.commit()
+
+
+def film_to_dict(row: sqlite3.Row) -> Dict:
+    """Convert a database row to a film dictionary."""
+    film = {
+        'title': row['title'],
+        'year': row['year'],
+        'slug': row['letterboxd_slug'],
+        'letterboxd_id': row['letterboxd_id'],
+        'letterboxd_url': f"https://letterboxd.com/film/{row['letterboxd_slug']}/" if row['letterboxd_slug'] else None,
+    }
+    
+    # Letterboxd data
+    if row['letterboxd_watches'] is not None:
+        film['letterboxd_watches'] = row['letterboxd_watches']
+    if row['letterboxd_likes'] is not None:
+        film['letterboxd_likes'] = row['letterboxd_likes']
+    if row['letterboxd_lists'] is not None:
+        film['letterboxd_lists'] = row['letterboxd_lists']
+    if row['letterboxd_rating'] is not None:
+        film['letterboxd_rating'] = row['letterboxd_rating']
+    
+    # TMDb data
+    if row['tmdb_id'] is not None:
+        film['tmdb_id'] = row['tmdb_id']
+    if row['popularity'] is not None:
+        film['popularity'] = row['popularity']
+    if row['vote_count'] is not None:
+        film['vote_count'] = row['vote_count']
+    if row['vote_average'] is not None:
+        film['vote_average'] = row['vote_average']
+    if row['poster_path']:
+        film['poster_path'] = row['poster_path']
+    if row['original_language']:
+        film['original_language'] = row['original_language']
+    if row['runtime'] is not None:
+        film['runtime'] = row['runtime']
+    if row['budget'] is not None:
+        film['budget'] = row['budget']
+    if row['revenue'] is not None:
+        film['revenue'] = row['revenue']
+    
+    # Metadata
+    if row['director']:
+        film['director'] = row['director']
+    if row['genres']:
+        try:
+            film['genres'] = json.loads(row['genres'])
+        except json.JSONDecodeError:
+            film['genres'] = []
+    else:
+        film['genres'] = []
+    
+    if row['production_countries']:
+        try:
+            film['production_countries'] = json.loads(row['production_countries'])
+        except json.JSONDecodeError:
+            film['production_countries'] = []
+    else:
+        film['production_countries'] = []
+    
+    return film
+
+
+def get_film_by_slug(slug: str) -> Optional[Dict]:
+    """Get a film by its Letterboxd slug."""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM films WHERE letterboxd_slug = ?", (slug,))
+        row = cursor.fetchone()
+        if row:
+            return film_to_dict(row)
+    return None
+
+
+def get_films_by_slugs(slugs: List[str]) -> Dict[str, Dict]:
+    """Get multiple films by their Letterboxd slugs. Returns a dict mapping slug to film."""
+    if not slugs:
+        return {}
+    
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        placeholders = ','.join('?' * len(slugs))
+        cursor.execute(f"SELECT * FROM films WHERE letterboxd_slug IN ({placeholders})", slugs)
+        rows = cursor.fetchall()
+        return {row['letterboxd_slug']: film_to_dict(row) for row in rows}
+
+
+def save_film(film: Dict) -> None:
+    """Save or update a film in the database."""
+    slug = film.get('slug') or film.get('letterboxd_slug')
+    if not slug:
+        return  # Can't save without a slug
+    
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        
+        # Prepare data
+        genres_json = json.dumps(film.get('genres', []))
+        countries_json = json.dumps(film.get('production_countries', []))
+        
+        # Check if film exists
+        cursor.execute("SELECT id FROM films WHERE letterboxd_slug = ?", (slug,))
+        exists = cursor.fetchone()
+        
+        if exists:
+            # Update existing film
+            cursor.execute("""
+                UPDATE films SET
+                    letterboxd_id = ?,
+                    title = ?,
+                    year = ?,
+                    tmdb_id = ?,
+                    letterboxd_watches = ?,
+                    letterboxd_likes = ?,
+                    letterboxd_lists = ?,
+                    letterboxd_rating = ?,
+                    popularity = ?,
+                    vote_count = ?,
+                    vote_average = ?,
+                    poster_path = ?,
+                    original_language = ?,
+                    runtime = ?,
+                    budget = ?,
+                    revenue = ?,
+                    director = ?,
+                    genres = ?,
+                    production_countries = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE letterboxd_slug = ?
+            """, (
+                film.get('letterboxd_id'),
+                film.get('title'),
+                film.get('year'),
+                film.get('tmdb_id'),
+                film.get('letterboxd_watches'),
+                film.get('letterboxd_likes'),
+                film.get('letterboxd_lists'),
+                film.get('letterboxd_rating'),
+                film.get('popularity'),
+                film.get('vote_count'),
+                film.get('vote_average'),
+                film.get('poster_path'),
+                film.get('original_language'),
+                film.get('runtime'),
+                film.get('budget'),
+                film.get('revenue'),
+                film.get('director'),
+                genres_json,
+                countries_json,
+                slug
+            ))
+        else:
+            # Insert new film
+            cursor.execute("""
+                INSERT INTO films (
+                    letterboxd_slug, letterboxd_id, title, year, tmdb_id,
+                    letterboxd_watches, letterboxd_likes, letterboxd_lists, letterboxd_rating,
+                    popularity, vote_count, vote_average, poster_path, original_language,
+                    runtime, budget, revenue, director, genres, production_countries
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                slug,
+                film.get('letterboxd_id'),
+                film.get('title'),
+                film.get('year'),
+                film.get('tmdb_id'),
+                film.get('letterboxd_watches'),
+                film.get('letterboxd_likes'),
+                film.get('letterboxd_lists'),
+                film.get('letterboxd_rating'),
+                film.get('popularity'),
+                film.get('vote_count'),
+                film.get('vote_average'),
+                film.get('poster_path'),
+                film.get('original_language'),
+                film.get('runtime'),
+                film.get('budget'),
+                film.get('revenue'),
+                film.get('director'),
+                genres_json,
+                countries_json
+            ))
+
+
+def save_films(films: List[Dict]) -> None:
+    """Save multiple films to the database."""
+    for film in films:
+        save_film(film)
+
+
+def get_stats() -> Dict:
+    """Get database statistics."""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) as total FROM films")
+        total = cursor.fetchone()['total']
+        
+        cursor.execute("SELECT COUNT(*) as with_watches FROM films WHERE letterboxd_watches IS NOT NULL")
+        with_watches = cursor.fetchone()['with_watches']
+        
+        cursor.execute("SELECT COUNT(*) as with_tmdb FROM films WHERE tmdb_id IS NOT NULL")
+        with_tmdb = cursor.fetchone()['with_tmdb']
+        
+        return {
+            'total_films': total,
+            'films_with_watches': with_watches,
+            'films_with_tmdb': with_tmdb
+        }

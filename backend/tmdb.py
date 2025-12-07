@@ -1,5 +1,6 @@
 """
 TMDb API integration for enriching film data with popularity scores and metadata.
+Now checks database first to avoid redundant API calls.
 """
 
 import os
@@ -7,6 +8,7 @@ import asyncio
 import aiohttp
 from typing import Optional
 from dotenv import load_dotenv
+from database import get_films_by_slugs, save_film
 
 load_dotenv()
 
@@ -17,15 +19,40 @@ TMDB_BASE_URL = "https://api.themoviedb.org/3"
 async def enrich_films_with_tmdb(films: list[dict]) -> list[dict]:
     """
     Enrich film list with TMDb data including popularity, genres, etc.
+    Checks database first to avoid redundant API calls.
     """
     if not TMDB_API_KEY:
         print("Warning: TMDB_API_KEY not set. Using basic data only.")
         return films
     
+    # First, check database for existing films
+    slugs = [f.get('slug') for f in films if f.get('slug')]
+    db_films = get_films_by_slugs(slugs)
+    
+    # Separate films into those we have in DB and those we need to fetch
+    films_to_enrich = []
+    enriched_from_db = []
+    
+    for film in films:
+        slug = film.get('slug')
+        if slug and slug in db_films:
+            # Film exists in database - merge DB data with film data
+            db_film = db_films[slug]
+            # Preserve user-specific data (rating) but use DB data for metadata
+            film.update({k: v for k, v in db_film.items() if k not in ['user_rating']})
+            enriched_from_db.append(film)
+        else:
+            # Film not in DB or missing slug - need to fetch
+            films_to_enrich.append(film)
+    
+    if not films_to_enrich:
+        # All films found in database!
+        return enriched_from_db
+    
+    # Enrich remaining films via API
     async with aiohttp.ClientSession() as session:
         # Process films in batches - adjust batch size based on total films
-        # For large collections, use larger batches to finish faster
-        total_films = len(films)
+        total_films = len(films_to_enrich)
         if total_films > 500:
             batch_size = 15  # Larger batches for big collections
             delay = 0.2  # Shorter delay
@@ -38,8 +65,8 @@ async def enrich_films_with_tmdb(films: list[dict]) -> list[dict]:
         
         enriched = []
         
-        for i in range(0, len(films), batch_size):
-            batch = films[i:i + batch_size]
+        for i in range(0, len(films_to_enrich), batch_size):
+            batch = films_to_enrich[i:i + batch_size]
             tasks = [enrich_single_film(session, film) for film in batch]
             results = await asyncio.gather(*tasks, return_exceptions=True)
             
@@ -48,12 +75,15 @@ async def enrich_films_with_tmdb(films: list[dict]) -> list[dict]:
                     enriched.append(film)
                 else:
                     enriched.append(result)
+                    # Save to database for future use
+                    save_film(result)
             
             # Rate limiting
-            if i + batch_size < len(films):  # Don't sleep after last batch
+            if i + batch_size < len(films_to_enrich):  # Don't sleep after last batch
                 await asyncio.sleep(delay)
-        
-        return enriched
+    
+    # Combine films from DB and newly enriched films
+    return enriched_from_db + enriched
 
 
 async def enrich_single_film(session: aiohttp.ClientSession, film: dict) -> dict:
