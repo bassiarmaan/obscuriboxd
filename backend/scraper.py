@@ -82,7 +82,12 @@ async def get_user_films(username: str) -> list[dict]:
             # Film exists in database - use DB data but keep user rating
             db_film = db_films[slug]
             film.update({k: v for k, v in db_film.items() if k != 'user_rating'})
-            enriched_films.append(film)
+            
+            # If film doesn't have a poster, add it to scrape list to get poster
+            if not film.get('poster_path'):
+                films_to_scrape.append(film)
+            else:
+                enriched_films.append(film)
         else:
             # Film not in DB - need to scrape
             films_to_scrape.append(film)
