@@ -4,7 +4,7 @@
 
 Obscuriboxd analyzes your Letterboxd profile to calculate your personal obscurity score and provide detailed insights into your viewing habits. Are you a "Crowd Favorite" who enjoys mainstream hits, or a "Deep Cuts Connoisseur" with obscure taste? Find out!
 
-![Obscuriboxd Dashboard](frontend/public/obscuriboxd-dashboard.png)
+![Obscuriboxd Dashboard](frontend/public/obscuriboxd-dashboard.png.png)
 
 ## ✨ Features
 
