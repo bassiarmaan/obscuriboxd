@@ -95,7 +95,7 @@ async def get_user_films(username: str) -> list[dict]:
     # Scrape only films not in database, but limit to prevent server overload
     # On production (Render), disable scraping entirely (set MAX_FILMS_TO_SCRAPE=0)
     # Run populate scripts locally instead
-    MAX_FILMS_TO_SCRAPE_PER_REQUEST = int(os.getenv("MAX_FILMS_TO_SCRAPE", "20"))
+    MAX_FILMS_TO_SCRAPE_PER_REQUEST = int(os.getenv("MAX_FILMS_TO_SCRAPE", "100"))  # Default to 100 instead of 20
     
     if films_to_scrape:
         # If scraping is disabled, just use films as-is (without watch counts)
