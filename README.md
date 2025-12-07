@@ -1,154 +1,133 @@
 # Obscuriboxd 🎬
 
-**Obscurify for Letterboxd** — Discover how unique your film taste really is.
+**Discover how unique your Letterboxd film taste really is.**
 
-![Obscuriboxd](https://img.shields.io/badge/Status-Development-yellow)
+Obscuriboxd analyzes your Letterboxd profile to calculate your personal obscurity score and provide detailed insights into your viewing habits. Are you a "Crowd Favorite" who enjoys mainstream hits, or a "Deep Cuts Connoisseur" with obscure taste? Find out!
 
-## What is this?
+![Obscuriboxd Dashboard](./frontend/public/obscuriboxd-dashboard.png)
 
-Obscuriboxd analyzes your Letterboxd profile and calculates an "obscurity score" based on how mainstream or niche your film taste is. It also provides insights about your viewing habits including:
+## ✨ Features
 
-- 🎯 **Obscurity Score** — How unique is your taste compared to average viewers?
-- 🎭 **Genre Breakdown** — What genres do you gravitate toward?
-- 📅 **Decade Analysis** — Are you into classics or modern cinema?
-- 🌍 **Country Distribution** — How internationally diverse is your watchlist?
-- 🎬 **Director Stats** — Who are your most-watched filmmakers?
-- 🎭 **Mood Analysis** — What's the emotional vibe of your film collection?
+### 📊 Obscurity Score
+Get a personalized score from 0-100 that measures how mainstream or obscure your film taste is:
+- **0-30**: Crowd Favorite - You enjoy what most people enjoy
+- **31-60**: Balanced Viewer - A mix of popular and niche films
+- **61-100**: Deep Cuts Connoisseur - You seek out the obscure and unique
 
-## Tech Stack
+### 📈 Comprehensive Analytics
 
-### Backend (Python)
-- **FastAPI** — Modern async web framework
-- **BeautifulSoup** — Web scraping for Letterboxd data
-- **TMDb API** — Film metadata and popularity scores
-- **aiohttp** — Async HTTP client
+**Personal Profile**
+- Obscurity score with visual dial indicator
+- Personalized persona based on your taste
+- Mainstream ↔ Obscure spectrum visualization
 
-### Frontend (Next.js)
-- **Next.js 14** — React framework
-- **Tailwind CSS** — Styling
-- **Framer Motion** — Animations
-- **Recharts** — Data visualization
+**Key Metrics**
+- Total films analyzed
+- Average rating across all films
+- Top genre preference
+- Countries represented in your watchlist
 
-## Getting Started
+**Visual Breakdowns**
+- **Genre Distribution**: See which genres dominate your viewing habits
+- **Decade Analysis**: Discover your favorite film eras
+- **Country Breakdown**: Explore the diversity of your film origins
+- **Rating Distribution**: Understand your rating patterns
+- **Mood Analysis**: Get insights into the emotional tone of your preferences
+
+**Film Highlights**
+- **Most Obscure Films**: Your deepest cuts and hidden gems
+- **Most Mainstream Films**: Your popular favorites
+- **Films by Decade**: Organized view of your collection across time periods
+- **Top Directors**: Your most-watched filmmakers
+
+## 🎯 How It Works
+
+1. **Enter Your Letterboxd Username**: Simply provide your Letterboxd username
+2. **Analysis**: Obscuriboxd fetches your complete film list and analyzes:
+   - Watch counts from Letterboxd (measures popularity)
+   - Genres, directors, countries, and decades
+   - Your personal ratings and viewing patterns
+3. **Obscurity Calculation**: Uses median watch counts to determine how obscure your taste is
+4. **Personalized Results**: Get your unique obscurity score and detailed breakdowns
+
+## 🛠️ Technologies
+
+### Backend
+- **FastAPI** - Modern Python web framework for the API
+- **SQLite** - Lightweight database for film metadata caching
+- **aiohttp** - Asynchronous HTTP client for web scraping
+- **BeautifulSoup** - HTML parsing for Letterboxd data extraction
+- **TMDb API** - Movie database integration for poster images
+
+### Frontend
+- **Next.js 14** - React framework with App Router
+- **TypeScript** - Type-safe JavaScript
+- **Tailwind CSS** - Utility-first CSS framework
+- **Recharts** - Beautiful, composable charting library
+- **Vercel Analytics** - Performance and usage tracking
+
+### Infrastructure
+- **Render** - Backend hosting and deployment
+- **Vercel** - Frontend hosting and deployment
+- **GitHub** - Version control and CI/CD
+
+## 🏗️ Architecture
+
+### Database-First Approach
+- **Pre-populated Database**: Contains metadata for thousands of films
+- **Smart Caching**: Films are pulled from the database when available
+- **On-Demand Scraping**: Only scrapes missing or incomplete films
+- **Automatic Updates**: Database grows as new films are discovered
+
+### API Endpoints
+- `POST /analyze` - Analyze a Letterboxd username and return obscurity stats
+- `GET /stats` - Get database statistics
+- `GET /films` - List films in the database (with pagination)
+- `GET /health` - Health check endpoint
+
+## 📊 Data Sources
+
+- **Letterboxd**: Primary source for user film lists, watch counts, and ratings
+- **TMDb (The Movie Database)**: Fallback source for film posters
+- **Comprehensive Database**: Pre-scraped film metadata for fast lookups
+
+## 🚀 Quick Start
 
 ### Prerequisites
-- Python 3.10+
-- Node.js 18+
-- TMDb API key (free at https://www.themoviedb.org/settings/api)
+- Node.js 18+ and npm
+- Python 3.9+
+- Letterboxd account
 
-### Backend Setup
+### Local Development
 
+**Backend:**
 ```bash
 cd backend
-
-# Create virtual environment
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install dependencies
 pip install -r requirements.txt
-
-# Create .env file
-echo "TMDB_API_KEY=your_api_key_here" > .env
-
-# Run the server
-python main.py
+uvicorn main:app --reload
 ```
 
-The API will be available at `http://localhost:8000`
-
-### Frontend Setup
-
+**Frontend:**
 ```bash
 cd frontend
-
-# Install dependencies
 npm install
-
-# Run development server
 npm run dev
 ```
 
-The app will be available at `http://localhost:3000`
+Visit `http://localhost:3000` to see the app.
 
-## Deployment
+## 📝 License
 
-### Frontend (Vercel)
+This project is open source and available for personal use.
 
-1. Push your code to GitHub
-2. Go to [vercel.com](https://vercel.com) and import your repository
-3. Set the **Root Directory** to `frontend`
-4. Add environment variable:
-   - `NEXT_PUBLIC_API_URL` = Your backend URL (e.g., `https://your-app.railway.app`)
-5. Deploy!
+## 🙏 Acknowledgments
 
-### Backend (Render)
+- **Letterboxd** - For providing an amazing platform for film lovers
+- **TMDb** - For comprehensive film metadata
+- Built with ❤️ for the film community
 
-1. Go to [render.com](https://render.com) and create a new **Web Service**
-2. Connect your GitHub repo (`bassiarmaan/obscuriboxd`)
-3. Configure:
-   - **Root Directory**: `backend`
-   - **Runtime**: Python 3
-   - **Build Command**: `pip install -r requirements.txt`
-   - **Start Command**: `uvicorn main:app --host 0.0.0.0 --port $PORT`
-4. Add environment variables:
-   - `TMDB_API_KEY` = Your TMDb API key
-   - `FRONTEND_URL` = Your Vercel URL (e.g., `https://obscuriboxd.vercel.app`)
-5. Deploy!
+---
 
-Alternative backend hosts: [Railway](https://railway.app), [Fly.io](https://fly.io)
-
-## API Endpoints
-
-### `POST /analyze`
-Analyze a Letterboxd user's film taste.
-
-**Request:**
-```json
-{
-  "username": "letterboxd_username"
-}
-```
-
-**Response:**
-```json
-{
-  "username": "letterboxd_username",
-  "obscurity_score": 65.4,
-  "total_films": 342,
-  "average_rating": 3.8,
-  "top_genres": {
-    "Drama": 89,
-    "Comedy": 56,
-    ...
-  },
-  "decade_breakdown": {
-    "2020s": 45,
-    "2010s": 123,
-    ...
-  },
-  ...
-}
-```
-
-## How Obscurity is Calculated
-
-The obscurity score (0-100) is based on:
-
-1. **TMDb Popularity** — Films with lower popularity scores contribute to higher obscurity
-2. **Vote Count** — Fewer votes = more obscure
-3. **Geographic Diversity** — Watching films from many countries adds to obscurity
-4. **Temporal Diversity** — Spanning many decades shows broader taste
-
-The formula uses a logarithmic scale since film popularity follows a power-law distribution.
-
-## Disclaimer
-
-This project is not affiliated with Letterboxd. It scrapes publicly available profile data and is intended for personal use. Please be respectful of Letterboxd's servers and don't abuse this tool.
-
-## License
-
-MIT
-
-
-
+**Made for film lovers, by film lovers.** 🎥
