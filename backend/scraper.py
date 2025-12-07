@@ -9,6 +9,7 @@ import aiohttp
 from bs4 import BeautifulSoup
 import re
 from database import save_films, get_films_by_slugs
+from aiohttp import ClientTimeout
 
 
 async def get_user_films(username: str) -> list[dict]:
@@ -22,7 +23,9 @@ async def get_user_films(username: str) -> list[dict]:
     consecutive_empty_pages = 0
     max_empty_pages = 2  # Stop after 2 consecutive empty pages
     
-    async with aiohttp.ClientSession() as session:
+    # Create session with timeout to prevent hanging
+    timeout = ClientTimeout(total=30, connect=10)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
         while True:
             url = f"https://letterboxd.com/{username}/films/page/{page}/"
             
@@ -92,14 +95,25 @@ async def enrich_with_letterboxd_stats(films: list[dict]) -> list[dict]:
     """
     Fetch Letterboxd watch counts from the stats CSI endpoint.
     Fetches for ALL films to ensure complete data.
+    Uses smaller batches and better error handling for large collections.
     """
     if not films:
         return films
     
-    async with aiohttp.ClientSession() as session:
-        # Process in batches to avoid overwhelming the server
+    # Adjust batch size based on total films to avoid overwhelming
+    if len(films) > 1000:
+        batch_size = 5  # Smaller batches for very large collections
+        delay = 0.5
+    elif len(films) > 500:
+        batch_size = 8
+        delay = 0.4
+    else:
         batch_size = 10
-        
+        delay = 0.3
+    
+    # Create session with timeout settings
+    timeout = aiohttp.ClientTimeout(total=30, connect=10)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
         for i in range(0, len(films), batch_size):
             batch = films[i:i + batch_size]
             tasks = [get_film_stats(session, film) for film in batch]
@@ -108,18 +122,20 @@ async def enrich_with_letterboxd_stats(films: list[dict]) -> list[dict]:
             for film, result in zip(batch, results):
                 if isinstance(result, dict):
                     film.update(result)
+                # Silently skip exceptions - they're handled in get_film_stats
             
             # Rate limiting - be respectful to Letterboxd
             if i + batch_size < len(films):  # Don't sleep after last batch
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(delay)
     
     return films
 
 
-async def get_film_stats(session: aiohttp.ClientSession, film: dict) -> dict:
+async def get_film_stats(session: aiohttp.ClientSession, film: dict, retries: int = 3) -> dict:
     """
     Get Letterboxd watch count from the CSI stats endpoint.
     This is the REAL source of watch counts.
+    Includes retry logic for connection errors.
     """
     slug = film.get('slug', '')
     if not slug:
@@ -128,26 +144,38 @@ async def get_film_stats(session: aiohttp.ClientSession, film: dict) -> dict:
     # The stats endpoint has the watch count
     stats_url = f"https://letterboxd.com/csi/film/{slug}/stats/"
     
-    try:
-        async with session.get(stats_url, headers=get_headers()) as response:
-            if response.status != 200:
-                return {}
-            
-            html = await response.text()
-            stats = parse_stats_html(html)
-            
-            # Always get additional details from main page (director, genres, countries)
-            main_url = f"https://letterboxd.com/film/{slug}/"
-            async with session.get(main_url, headers=get_headers()) as main_response:
-                if main_response.status == 200:
-                    main_html = await main_response.text()
-                    main_stats = parse_film_page(main_html)
-                    stats.update({k: v for k, v in main_stats.items() if v})
-            
-            return stats
-    except Exception as e:
-        print(f"Error fetching stats for {slug}: {e}")
-        return {}
+    for attempt in range(retries):
+        try:
+            # Add timeout to prevent hanging
+            timeout = aiohttp.ClientTimeout(total=10, connect=5)
+            async with session.get(stats_url, headers=get_headers(), timeout=timeout) as response:
+                if response.status != 200:
+                    return {}
+                
+                html = await response.text()
+                stats = parse_stats_html(html)
+                
+                # Always get additional details from main page (director, genres, countries)
+                main_url = f"https://letterboxd.com/film/{slug}/"
+                async with session.get(main_url, headers=get_headers(), timeout=timeout) as main_response:
+                    if main_response.status == 200:
+                        main_html = await main_response.text()
+                        main_stats = parse_film_page(main_html)
+                        stats.update({k: v for k, v in main_stats.items() if v})
+                
+                return stats
+        except (aiohttp.ClientError, asyncio.TimeoutError, ConnectionError, OSError) as e:
+            # Retry on connection errors
+            if attempt < retries - 1:
+                await asyncio.sleep(0.5 * (attempt + 1))  # Exponential backoff
+                continue
+            # Don't print error on last attempt - too noisy
+            return {}
+        except Exception as e:
+            # Don't retry on other errors
+            return {}
+    
+    return {}
 
 
 def parse_stats_html(html: str) -> dict:

@@ -116,7 +116,16 @@ async def analyze_user(request: AnalyzeRequest):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error analyzing user: {str(e)}")
+        # Log the error but don't expose internal details
+        error_msg = str(e)
+        if "not found" in error_msg.lower():
+            raise HTTPException(status_code=404, detail=error_msg)
+        # For other errors, return generic message
+        print(f"Error analyzing user {username}: {error_msg}")
+        raise HTTPException(
+            status_code=500, 
+            detail="Error analyzing user. Please try again later."
+        )
 
 
 if __name__ == "__main__":
