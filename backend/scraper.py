@@ -79,18 +79,19 @@ async def get_user_films(username: str) -> list[dict]:
     for film in films:
         slug = film.get('slug')
         if slug and slug in db_films:
-            # Film exists in database - use DB data but keep user rating
+            # Film exists in database (from films_complete.db or films.db) - use DB data but keep user rating
             db_film = db_films[slug]
             film.update({k: v for k, v in db_film.items() if k != 'user_rating'})
             
-            # If film doesn't have a poster, add it to scrape list to get poster
-            # This ensures posters are fetched even for films already in DB
-            if not film.get('poster_path') or not film.get('poster_path').strip():
-                films_to_scrape.append(film)
-            else:
+            # Only scrape if missing critical data (watch counts are essential for obscurity scoring)
+            # If film has watch counts, use it as-is (even without poster)
+            if film.get('letterboxd_watches') is not None:
                 enriched_films.append(film)
+            else:
+                # Missing watch counts - need to scrape
+                films_to_scrape.append(film)
         else:
-            # Film not in DB - need to scrape (will get poster during scraping)
+            # Film not in either database - need to scrape from Letterboxd
             films_to_scrape.append(film)
     
     # Scrape only films not in database, but limit to prevent server overload

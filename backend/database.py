@@ -10,21 +10,37 @@ from contextlib import contextmanager
 import os
 from pathlib import Path
 
-# Database file path
-# Defaults to backend/films.db, but can be overridden with DB_PATH env variable
+# Database file paths
+# Primary database for new scrapes
 _default_db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "films.db")
 DB_PATH = os.getenv("DB_PATH", _default_db_path)
 
+# Complete database with all films (read-only, checked first)
+_complete_db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "films_complete.db")
+COMPLETE_DB_PATH = os.getenv("COMPLETE_DB_PATH", _complete_db_path)
+
 
 def get_db_path() -> str:
-    """Get the database file path."""
+    """Get the primary database file path."""
     return DB_PATH
 
 
+def get_complete_db_path() -> str:
+    """Get the complete database file path."""
+    return COMPLETE_DB_PATH
+
+
+def complete_db_exists() -> bool:
+    """Check if the complete database exists."""
+    return os.path.exists(COMPLETE_DB_PATH)
+
+
 @contextmanager
-def get_db_connection():
+def get_db_connection(db_path: str = None):
     """Context manager for database connections."""
-    conn = sqlite3.connect(DB_PATH)
+    if db_path is None:
+        db_path = DB_PATH
+    conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row  # Enable column access by name
     try:
         yield conn
@@ -32,6 +48,20 @@ def get_db_connection():
     except Exception:
         conn.rollback()
         raise
+    finally:
+        conn.close()
+
+
+@contextmanager
+def get_complete_db_connection():
+    """Context manager for complete database connections (read-only)."""
+    if not complete_db_exists():
+        yield None
+        return
+    conn = sqlite3.connect(COMPLETE_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        yield conn
     finally:
         conn.close()
 
@@ -153,27 +183,68 @@ def film_to_dict(row: sqlite3.Row) -> Dict:
 
 
 def get_film_by_slug(slug: str) -> Optional[Dict]:
-    """Get a film by its Letterboxd slug."""
+    """
+    Get a film by its Letterboxd slug.
+    Checks films_complete.db first, then films.db.
+    """
+    # First check complete database
+    if complete_db_exists():
+        with get_complete_db_connection() as conn:
+            if conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT * FROM films WHERE letterboxd_slug = ?", (slug,))
+                row = cursor.fetchone()
+                if row:
+                    return film_to_dict(row)
+    
+    # Then check primary database
     with get_db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM films WHERE letterboxd_slug = ?", (slug,))
         row = cursor.fetchone()
         if row:
             return film_to_dict(row)
+    
     return None
 
 
 def get_films_by_slugs(slugs: List[str]) -> Dict[str, Dict]:
-    """Get multiple films by their Letterboxd slugs. Returns a dict mapping slug to film."""
+    """
+    Get multiple films by their Letterboxd slugs. 
+    Checks films_complete.db first, then films.db.
+    Returns a dict mapping slug to film.
+    """
     if not slugs:
         return {}
     
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        placeholders = ','.join('?' * len(slugs))
-        cursor.execute(f"SELECT * FROM films WHERE letterboxd_slug IN ({placeholders})", slugs)
-        rows = cursor.fetchall()
-        return {row['letterboxd_slug']: film_to_dict(row) for row in rows}
+    result = {}
+    remaining_slugs = set(slugs)
+    
+    # First, check the complete database (if it exists)
+    if complete_db_exists():
+        with get_complete_db_connection() as conn:
+            if conn:
+                cursor = conn.cursor()
+                placeholders = ','.join('?' * len(remaining_slugs))
+                cursor.execute(f"SELECT * FROM films WHERE letterboxd_slug IN ({placeholders})", list(remaining_slugs))
+                rows = cursor.fetchall()
+                for row in rows:
+                    slug = row['letterboxd_slug']
+                    result[slug] = film_to_dict(row)
+                    remaining_slugs.discard(slug)
+    
+    # Then, check the primary database for any remaining films
+    if remaining_slugs:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            placeholders = ','.join('?' * len(remaining_slugs))
+            cursor.execute(f"SELECT * FROM films WHERE letterboxd_slug IN ({placeholders})", list(remaining_slugs))
+            rows = cursor.fetchall()
+            for row in rows:
+                slug = row['letterboxd_slug']
+                result[slug] = film_to_dict(row)
+    
+    return result
 
 
 def save_film(film: Dict) -> None:
@@ -315,12 +386,8 @@ def get_stats() -> Dict:
         cursor.execute("SELECT COUNT(*) as with_tmdb FROM films WHERE tmdb_id IS NOT NULL")
         with_tmdb = cursor.fetchone()['with_tmdb']
         
-        cursor.execute("SELECT COUNT(*) as with_posters FROM films WHERE poster_path IS NOT NULL AND poster_path != ''")
-        with_posters = cursor.fetchone()['with_posters']
-        
         return {
             'total_films': total,
             'films_with_watches': with_watches,
-            'films_with_tmdb': with_tmdb,
-            'films_with_posters': with_posters
+            'films_with_tmdb': with_tmdb
         }
