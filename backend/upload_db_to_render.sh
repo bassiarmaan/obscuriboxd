@@ -35,3 +35,4 @@ else
     echo "❌ Compression failed"
     exit 1
 fi
+

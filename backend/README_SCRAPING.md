@@ -56,3 +56,4 @@ Switch to PostgreSQL or another managed database that persists automatically.
 Set `MAX_FILMS_TO_SCRAPE` environment variable on Render to control scraping limit:
 - Default: 20 films per request
 - Set to 0 to disable scraping entirely (database-only mode)
+

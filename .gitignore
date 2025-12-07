@@ -45,6 +45,7 @@ build/
 
 # Database
 backend/films.db
+backend/films_complete.db
 *.db
 
 
