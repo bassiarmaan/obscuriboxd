@@ -79,19 +79,31 @@ async def get_user_films(username: str) -> list[dict]:
     for film in films:
         slug = film.get('slug')
         if slug and slug in db_films:
-            # Film exists in database (from films_complete.db or films.db) - use DB data but keep user rating
+            # Film exists in database - use DB data but keep user rating
             db_film = db_films[slug]
             film.update({k: v for k, v in db_film.items() if k != 'user_rating'})
             
-            # Only scrape if missing critical data (watch counts are essential for obscurity scoring)
-            # If film has watch counts, use it as-is (even without poster)
-            if film.get('letterboxd_watches') is not None:
-                enriched_films.append(film)
-            else:
-                # Missing watch counts - need to scrape
+            # Check if film is missing critical information - if so, scrape to complete it
+            needs_scraping = False
+            
+            # Check for missing critical fields
+            if not film.get('title') or not film.get('title').strip():
+                needs_scraping = True
+            elif film.get('year') is None:
+                needs_scraping = True
+            elif film.get('letterboxd_watches') is None:
+                needs_scraping = True
+            elif not film.get('poster_path') or not film.get('poster_path').strip():
+                needs_scraping = True
+            
+            if needs_scraping:
+                # Film exists but missing critical info - scrape to complete it
                 films_to_scrape.append(film)
+            else:
+                # Film is complete - use as-is
+                enriched_films.append(film)
         else:
-            # Film not in either database - need to scrape from Letterboxd
+            # Film not in DB - need to scrape all information
             films_to_scrape.append(film)
     
     # Scrape only films not in database, but limit to prevent server overload
@@ -105,9 +117,15 @@ async def get_user_films(username: str) -> list[dict]:
             print(f"📊 Found {len(films_to_scrape)} films not in database (scraping disabled on server)")
             enriched_films.extend(films_to_scrape)
         elif len(films_to_scrape) > MAX_FILMS_TO_SCRAPE_PER_REQUEST:
-            # Too many films - only scrape a sample and use defaults for the rest
-            print(f"📊 Found {len(films_to_scrape)} films not in database, scraping {MAX_FILMS_TO_SCRAPE_PER_REQUEST} (limited to prevent overload)...")
-            films_to_scrape_now = films_to_scrape[:MAX_FILMS_TO_SCRAPE_PER_REQUEST]
+            # Too many films - prioritize films not in DB, then incomplete films
+            print(f"📊 Found {len(films_to_scrape)} films to scrape (limited to {MAX_FILMS_TO_SCRAPE_PER_REQUEST} per request)...")
+            
+            # Separate: films not in DB vs films missing info
+            films_not_in_db = [f for f in films_to_scrape if f.get('slug') not in db_films]
+            films_missing_info = [f for f in films_to_scrape if f.get('slug') in db_films]
+            
+            # Prioritize films not in DB
+            films_to_scrape_now = (films_not_in_db + films_missing_info)[:MAX_FILMS_TO_SCRAPE_PER_REQUEST]
             films_to_skip = films_to_scrape[MAX_FILMS_TO_SCRAPE_PER_REQUEST:]
             
             # Scrape the limited batch
@@ -115,16 +133,28 @@ async def get_user_films(username: str) -> list[dict]:
             enriched_films.extend(scraped_films)
             save_films(scraped_films)
             
-            # For the rest, use them as-is (without watch counts) - they'll be scraped later
-            enriched_films.extend(films_to_skip)
+            # For the rest, use what we have from DB (even if incomplete)
+            for film in films_to_skip:
+                slug = film.get('slug')
+                if slug and slug in db_films:
+                    db_film = db_films[slug]
+                    film.update({k: v for k, v in db_film.items() if k != 'user_rating'})
+                enriched_films.append(film)
         else:
             # Small number of films - safe to scrape all
-            print(f"📊 Found {len(films_to_scrape)} films not in database, scraping...")
+            films_not_in_db = [f for f in films_to_scrape if f.get('slug') not in db_films]
+            films_missing_info = [f for f in films_to_scrape if f.get('slug') in db_films]
+            
+            if films_not_in_db:
+                print(f"📊 Scraping {len(films_not_in_db)} new films and {len(films_missing_info)} incomplete films...")
+            else:
+                print(f"📊 Completing information for {len(films_missing_info)} films...")
+            
             scraped_films = await enrich_with_letterboxd_stats(films_to_scrape)
             enriched_films.extend(scraped_films)
             save_films(scraped_films)
     else:
-        print(f"✅ All {len(films)} films found in database!")
+        print(f"✅ All {len(films)} films found in database with complete information!")
     
     return enriched_films
 
