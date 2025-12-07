@@ -171,6 +171,7 @@ def calculate_obscurity_stats(films: list[dict], username: str) -> dict:
             "year": f.get('year'),
             "watches": f.get('letterboxd_watches'),
             "director": f.get('director'),
+            "poster_path": f.get('poster_path'),
         }
         for f, score, source in films_with_scores[:5]
     ]
@@ -181,6 +182,7 @@ def calculate_obscurity_stats(films: list[dict], username: str) -> dict:
             "year": f.get('year'),
             "watches": f.get('letterboxd_watches'),
             "director": f.get('director'),
+            "poster_path": f.get('poster_path'),
         }
         for f, score, source in films_with_scores[-5:][::-1]
     ]
@@ -203,6 +205,7 @@ def calculate_obscurity_stats(films: list[dict], username: str) -> dict:
                 "year": film.get('year'),
                 "watches": film.get('letterboxd_watches'),
                 "director": film.get('director'),
+                "poster_path": film.get('poster_path'),
                 "obscurity_score": round(score, 1),
             })
     
