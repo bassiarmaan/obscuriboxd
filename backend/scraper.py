@@ -75,6 +75,9 @@ async def get_user_films(username: str) -> list[dict]:
     # Merge database data with user's film list
     enriched_films = []
     films_to_scrape = []
+    from_db_count = 0
+    incomplete_count = 0
+    missing_count = 0
     
     for film in films:
         slug = film.get('slug')
@@ -85,26 +88,37 @@ async def get_user_films(username: str) -> list[dict]:
             
             # Check if film is missing critical information - if so, scrape to complete it
             needs_scraping = False
+            missing_fields = []
             
             # Check for missing critical fields
             if not film.get('title') or not film.get('title').strip():
                 needs_scraping = True
-            elif film.get('year') is None:
+                missing_fields.append('title')
+            if film.get('year') is None:
                 needs_scraping = True
-            elif film.get('letterboxd_watches') is None:
+                missing_fields.append('year')
+            if film.get('letterboxd_watches') is None:
                 needs_scraping = True
-            elif not film.get('poster_path') or not film.get('poster_path').strip():
+                missing_fields.append('watches')
+            if not film.get('poster_path') or not film.get('poster_path').strip():
                 needs_scraping = True
+                missing_fields.append('poster')
             
             if needs_scraping:
                 # Film exists but missing critical info - scrape to complete it
+                incomplete_count += 1
                 films_to_scrape.append(film)
             else:
-                # Film is complete - use as-is
+                # Film is complete - use as-is from database
+                from_db_count += 1
                 enriched_films.append(film)
         else:
             # Film not in DB - need to scrape all information
+            missing_count += 1
             films_to_scrape.append(film)
+    
+    # Log database usage stats
+    print(f"📊 Database lookup: {from_db_count} from DB, {incomplete_count} incomplete (needs scraping), {missing_count} not in DB")
     
     # Scrape only films not in database, but limit to prevent server overload
     # On production (Render), disable scraping entirely (set MAX_FILMS_TO_SCRAPE=0)
@@ -161,6 +175,7 @@ async def get_user_films(username: str) -> list[dict]:
             save_films(scraped_films)
     else:
         print(f"✅ All {len(films)} films found in database with complete information!")
+        print(f"   💾 100% from database - no scraping needed!")
     
     return enriched_films
 

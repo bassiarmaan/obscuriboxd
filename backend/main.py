@@ -46,7 +46,11 @@ async def startup_event():
     # Initialize database (will create schema if needed, or use existing)
     init_database()
     stats = get_stats()
-    print(f"Database initialized. Total films: {stats['total_films']}")
+    print(f"💾 Database initialized. Total films: {stats['total_films']}")
+    if stats['total_films'] > 0:
+        print(f"   ✅ Database is ready - films will be pulled from DB when available")
+    else:
+        print(f"   ⚠️  Database is empty - films will be scraped and saved")
 
 
 class AnalyzeRequest(BaseModel):
