@@ -14,10 +14,11 @@ from aiohttp import ClientTimeout
 
 # Import TMDb functions for poster fetching
 try:
-    from tmdb import search_film
+    from tmdb import search_film, TMDB_API_KEY
     TMDB_AVAILABLE = True
 except:
     TMDB_AVAILABLE = False
+    TMDB_API_KEY = None
 
 
 async def get_user_films(username: str) -> list[dict]:
@@ -217,17 +218,12 @@ async def get_film_stats(session: aiohttp.ClientSession, film: dict, retries: in
 
 async def get_tmdb_poster(title: str, year: int) -> str | None:
     """Get TMDb poster path for a film. Returns just the path (e.g., '/abc123.jpg')."""
-    if not TMDB_AVAILABLE:
-        return None
-    
-    import os
-    from tmdb import TMDB_API_KEY
-    
-    if not TMDB_API_KEY:
+    if not TMDB_AVAILABLE or not TMDB_API_KEY:
         return None
     
     try:
-        async with aiohttp.ClientSession() as session:
+        timeout = ClientTimeout(total=5, connect=3)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
             tmdb_data = await search_film(session, title, year, None)
             if tmdb_data and tmdb_data.get('poster_path'):
                 return tmdb_data.get('poster_path')
