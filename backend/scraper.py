@@ -70,7 +70,9 @@ async def get_user_films(username: str) -> list[dict]:
     
     # Check database first for existing films
     slugs = [f.get('slug') for f in films if f.get('slug')]
+    print(f"🔍 Looking up {len(slugs)} film slugs in database...")
     db_films = get_films_by_slugs(slugs)
+    print(f"   Found {len(db_films)} films in database")
     
     # Merge database data with user's film list
     enriched_films = []

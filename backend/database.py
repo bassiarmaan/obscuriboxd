@@ -225,12 +225,35 @@ def get_films_by_slugs(slugs: List[str]) -> Dict[str, Dict]:
     if not slugs:
         return {}
     
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        placeholders = ','.join('?' * len(slugs))
-        cursor.execute(f"SELECT * FROM films WHERE letterboxd_slug IN ({placeholders})", slugs)
-        rows = cursor.fetchall()
-        return {row['letterboxd_slug']: film_to_dict(row) for row in rows}
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            placeholders = ','.join('?' * len(slugs))
+            cursor.execute(f"SELECT * FROM films WHERE letterboxd_slug IN ({placeholders})", slugs)
+            rows = cursor.fetchall()
+            result = {row['letterboxd_slug']: film_to_dict(row) for row in rows}
+            
+            # Debug: show sample of what we found
+            if result:
+                sample_slug = list(result.keys())[0]
+                print(f"   ✅ Sample match: '{sample_slug}' -> {result[sample_slug].get('title', 'N/A')}")
+            elif slugs:
+                # Show sample of what we're looking for
+                print(f"   ⚠️  No matches found. Sample slugs searched: {slugs[:3]}")
+                # Check if database has any films at all
+                cursor.execute("SELECT COUNT(*) as total FROM films")
+                total = cursor.fetchone()['total']
+                print(f"   📊 Database has {total} total films")
+                if total > 0:
+                    # Show sample slugs from database
+                    cursor.execute("SELECT letterboxd_slug FROM films LIMIT 3")
+                    sample_db_slugs = [row['letterboxd_slug'] for row in cursor.fetchall()]
+                    print(f"   📋 Sample slugs in DB: {sample_db_slugs}")
+            
+            return result
+    except Exception as e:
+        print(f"   ❌ Error querying database: {e}")
+        return {}
 
 
 def save_film(film: Dict) -> None:
