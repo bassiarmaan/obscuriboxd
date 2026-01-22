@@ -70,6 +70,7 @@ class AnalyzeResponse(BaseModel):
     obscurity_score: float
     total_films: int
     average_rating: float | None
+    median_watches: int | None  # Added missing field
     top_genres: dict[str, int]
     decade_breakdown: dict[str, int]
     country_breakdown: dict[str, int]
@@ -178,12 +179,16 @@ async def analyze_user(request: AnalyzeRequest):
     except HTTPException:
         raise
     except Exception as e:
-        # Log the error but don't expose internal details
+        # Log the error with traceback for debugging
+        import traceback
         error_msg = str(e)
+        error_traceback = traceback.format_exc()
+        print(f"Error analyzing user {username}: {error_msg}")
+        print(f"Traceback:\n{error_traceback}")
+        
         if "not found" in error_msg.lower():
             raise HTTPException(status_code=404, detail=error_msg)
         # For other errors, return generic message
-        print(f"Error analyzing user {username}: {error_msg}")
         raise HTTPException(
             status_code=500, 
             detail="Error analyzing user. Please try again later."
