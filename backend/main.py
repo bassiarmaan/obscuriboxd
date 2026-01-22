@@ -163,7 +163,9 @@ async def analyze_user(request: AnalyzeRequest):
     
     try:
         # Step 1: Scrape user's films from Letterboxd (includes watch counts, genres, director, countries)
+        print(f"🔄 Starting analysis for user: {username}")
         films = await get_user_films(username)
+        print(f"✅ Got {len(films) if films else 0} films for user: {username}")
         
         if not films:
             raise HTTPException(
@@ -172,8 +174,17 @@ async def analyze_user(request: AnalyzeRequest):
             )
         
         # Step 2: Calculate obscurity score and stats (all data comes from Letterboxd)
-        stats = calculate_obscurity_stats(films, username)
+        print(f"📊 Calculating stats for {len(films)} films...")
+        try:
+            stats = calculate_obscurity_stats(films, username)
+            print(f"✅ Stats calculated successfully")
+        except Exception as calc_error:
+            print(f"❌ Calculator error: {calc_error}")
+            import traceback
+            print(f"Calculator traceback:\n{traceback.format_exc()}")
+            raise
         
+        print(f"📤 Returning stats: obscurity_score={stats.get('obscurity_score')}, total_films={stats.get('total_films')}")
         return stats
         
     except HTTPException:
