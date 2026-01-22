@@ -16,9 +16,11 @@ from aiohttp import ClientTimeout
 try:
     import cloudscraper
     CLOUDSCRAPER_AVAILABLE = True
+    print("✅ Cloudscraper is available for Cloudflare bypass")
 except ImportError:
     CLOUDSCRAPER_AVAILABLE = False
     cloudscraper = None
+    print("⚠️  Cloudscraper not available - will use aiohttp (may be blocked by Cloudflare)")
 
 # Import TMDb functions for poster fetching
 try:
@@ -48,6 +50,7 @@ async def get_user_films(username: str) -> list[dict]:
             
             try:
                 # Try using cloudscraper first to bypass Cloudflare
+                print(f"📡 Fetching page {page} for user '{username}'...")
                 html = await fetch_with_cloudflare_bypass(url, get_headers())
                 
                 # Check if we got a Cloudflare challenge
@@ -57,19 +60,43 @@ async def get_user_films(username: str) -> list[dict]:
                             f"Cloudflare protection detected. Letterboxd is blocking automated requests. "
                             f"This may be temporary. Please try again later or check if your IP is blocked."
                         )
+                    print(f"⚠️  Cloudflare challenge on page {page}, stopping")
                     break
                 
                 # Check for 404 by looking for common 404 indicators
-                if 'not found' in html.lower() or '404' in html.lower():
+                if 'not found' in html.lower() or '404' in html.lower() or 'page not found' in html.lower():
                     if page == 1:
                         raise Exception(f"User '{username}' not found")
+                    print(f"⚠️  404 detected on page {page}, stopping")
                     break
                 
+                # Check if profile is private
+                if 'private' in html.lower() and 'profile' in html.lower():
+                    if page == 1:
+                        raise Exception(f"User '{username}' profile is private. Make sure the profile is public.")
+                    break
+                
+                # Verify we got valid HTML
+                if not html or len(html) < 100:
+                    if page == 1:
+                        raise Exception(f"Received empty or invalid response from Letterboxd for user '{username}'")
+                    break
+                
+                print(f"📊 Parsing films from page {page} (HTML length: {len(html)})...")
                 page_films = parse_films_page(html)
+                print(f"   Found {len(page_films)} films on page {page}")
                 
                 if not page_films:
                     consecutive_empty_pages += 1
                     if consecutive_empty_pages >= max_empty_pages:
+                        if page == 1:
+                            # First page with no films - could be empty profile or parsing issue
+                            print(f"⚠️  No films found on first page for user '{username}'")
+                            print(f"   HTML length: {len(html)}")
+                            print(f"   Contains 'film': {'film' in html.lower()}")
+                            print(f"   Contains 'letterboxd': {'letterboxd' in html.lower()}")
+                            # Save a sample of HTML for debugging (first 500 chars)
+                            print(f"   HTML preview: {html[:500]}")
                         break
                     page += 1
                     continue
@@ -86,6 +113,10 @@ async def get_user_films(username: str) -> list[dict]:
             except Exception as e:
                 # Re-raise our custom exceptions
                 raise
+    
+    # If no films found at all, raise an error
+    if not films:
+        raise Exception(f"No films found for user '{username}'. Make sure the profile is public.")
     
     # Check database first for existing films
     slugs = [f.get('slug') for f in films if f.get('slug')]
@@ -511,44 +542,119 @@ async def fetch_with_cloudflare_bypass(url: str, headers: dict = None) -> str:
     Fetch URL with Cloudflare bypass using cloudscraper.
     Falls back to aiohttp if cloudscraper is not available.
     """
+    request_headers = headers or get_headers()
+    
     if CLOUDSCRAPER_AVAILABLE:
         # Use cloudscraper in a thread pool to avoid blocking
         loop = asyncio.get_event_loop()
         scraper = cloudscraper.create_scraper()
         try:
-            response = await loop.run_in_executor(
-                None, 
-                lambda: scraper.get(url, headers=headers or get_headers(), timeout=30)
-            )
-            return response.text
+            def fetch():
+                resp = scraper.get(url, headers=request_headers, timeout=30, allow_redirects=True)
+                # Verify we got a successful response
+                if resp.status_code == 404:
+                    raise Exception(f"404 Not Found: User or page does not exist")
+                elif resp.status_code != 200:
+                    raise Exception(f"HTTP {resp.status_code} error: {resp.reason}")
+                html_text = resp.text
+                if not html_text:
+                    raise Exception("Empty response received")
+                return html_text
+            
+            html = await loop.run_in_executor(None, fetch)
+            print(f"✅ Successfully fetched {url} via cloudscraper (length: {len(html)})")
+            return html
         except Exception as e:
-            print(f"⚠️  Cloudscraper failed: {str(e)}, falling back to aiohttp")
+            error_msg = str(e)
+            print(f"⚠️  Cloudscraper failed for {url}: {error_msg}")
+            # If it's a 404, don't fall back - raise it
+            if "404" in error_msg or "Not Found" in error_msg:
+                raise
+            print(f"   Falling back to aiohttp...")
     
     # Fallback to aiohttp
     timeout = ClientTimeout(total=30, connect=10)
     async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.get(url, headers=headers or get_headers()) as response:
+        async with session.get(url, headers=request_headers) as response:
             if response.status != 200:
-                raise Exception(f"HTTP {response.status} error")
-            return await response.text()
+                error_text = await response.text()
+                raise Exception(f"HTTP {response.status} error: {response.reason}. Response: {error_text[:200]}")
+            html = await response.text()
+            print(f"✅ Successfully fetched {url} via aiohttp (length: {len(html)})")
+            return html
 
 
 def parse_films_page(html: str) -> list[dict]:
     """Parse a page of films from Letterboxd's current HTML structure."""
     soup = BeautifulSoup(html, 'lxml')
     films = []
+    seen_slugs = set()
     
-    # Find all react-component divs with film data
+    # Try multiple selectors as Letterboxd may have changed their structure
+    # Method 1: React component with LazyPoster
     film_components = soup.select('div.react-component[data-component-class="LazyPoster"]')
     
+    # Method 2: Alternative selector for film posters
+    if not film_components:
+        film_components = soup.select('li[data-film-slug]')
+    
+    # Method 3: Look for film links in the films list
+    if not film_components:
+        film_components = soup.select('div.film-poster, li.film-detail')
+    
+    # Method 4: Try finding any element with data-item-slug
+    if not film_components:
+        film_components = soup.select('[data-item-slug]')
+    
+    # Method 5: NEW - Look for poster images in list items (current Letterboxd structure 2025+)
+    # Structure: <li><div><img alt="Poster for Film Name (Year)"><a href="/film/slug/">...</a></div></li>
+    if not film_components:
+        film_components = soup.select('li img[alt^="Poster for"]')
+    
     for component in film_components:
-        # Extract film data from data attributes
-        item_name = component.get('data-item-name', '')
-        slug = component.get('data-item-slug', '')
-        film_id = component.get('data-film-id', '')
+        item_name = ''
+        slug = ''
+        film_id = ''
         
-        if not item_name or not slug:
+        # Check if this is a poster img element (Method 5)
+        if component.name == 'img' and component.get('alt', '').startswith('Poster for'):
+            # Extract title and year from alt text: "Poster for Film Name (Year)"
+            alt_text = component.get('alt', '')
+            item_name = alt_text.replace('Poster for ', '')
+            
+            # Find the parent li and look for the film link
+            parent_li = component.find_parent('li')
+            if parent_li:
+                film_link = parent_li.find('a', href=re.compile(r'/film/[^/]+/?$'))
+                if film_link:
+                    href = film_link.get('href', '')
+                    slug_match = re.search(r'/film/([^/]+)/?$', href)
+                    if slug_match:
+                        slug = slug_match.group(1)
+        else:
+            # Original extraction logic for other methods
+            item_name = (component.get('data-item-name', '') or 
+                        component.get('data-film-name', '') or
+                        component.get('title', ''))
+            slug = (component.get('data-item-slug', '') or 
+                   component.get('data-film-slug', ''))
+            film_id = component.get('data-film-id', '')
+            
+            # If we still don't have a slug, try extracting from href
+            if not slug:
+                link = component.find('a', href=re.compile(r'/film/'))
+                if link:
+                    href = link.get('href', '')
+                    slug_match = re.search(r'/film/([^/]+)/?', href)
+                    if slug_match:
+                        slug = slug_match.group(1)
+                        if not item_name:
+                            item_name = link.get_text(strip=True) or link.get('title', '')
+        
+        if not slug or slug in seen_slugs:
             continue
+        
+        seen_slugs.add(slug)
         
         # Parse title and year from item_name (e.g., "Wicked: For Good (2025)")
         title = item_name
@@ -560,21 +666,41 @@ def parse_films_page(html: str) -> list[dict]:
             year = int(year_match.group(1))
             title = item_name[:year_match.start()].strip()
         
-        # Find the rating in the poster-viewingdata element
+        # If we still don't have a title, use the slug
+        if not title:
+            title = slug.replace('-', ' ').title()
+        
+        # Find the rating - look in different places depending on structure
         user_rating = None
-        viewingdata = component.find_next('p', class_='poster-viewingdata')
-        if viewingdata:
-            rating_span = viewingdata.select_one('span.rating')
-            if rating_span:
-                rating_class = rating_span.get('class', [])
-                for cls in rating_class:
-                    if cls.startswith('rated-'):
-                        try:
-                            # rated-6 means 3 stars (rating * 2)
-                            rating_value = int(cls.replace('rated-', ''))
-                            user_rating = rating_value / 2.0
-                        except ValueError:
-                            pass
+        
+        # For img-based components, find the parent li and look for rating
+        if component.name == 'img':
+            parent_li = component.find_parent('li')
+            if parent_li:
+                # Look for rating in paragraph following the poster
+                rating_p = parent_li.find('p')
+                if rating_p:
+                    # Count star characters (★ = full star, ½ = half star)
+                    rating_text = rating_p.get_text()
+                    full_stars = rating_text.count('★')
+                    half_stars = rating_text.count('½')
+                    if full_stars > 0 or half_stars > 0:
+                        user_rating = full_stars + (0.5 if half_stars else 0)
+        else:
+            # Original rating extraction
+            viewingdata = component.find_next('p', class_='poster-viewingdata')
+            if viewingdata:
+                rating_span = viewingdata.select_one('span.rating')
+                if rating_span:
+                    rating_class = rating_span.get('class', [])
+                    for cls in rating_class:
+                        if cls.startswith('rated-'):
+                            try:
+                                # rated-6 means 3 stars (rating * 2)
+                                rating_value = int(cls.replace('rated-', ''))
+                                user_rating = rating_value / 2.0
+                            except ValueError:
+                                pass
         
         films.append({
             'title': title,
@@ -584,6 +710,42 @@ def parse_films_page(html: str) -> list[dict]:
             'letterboxd_url': f"https://letterboxd.com/film/{slug}/" if slug else None,
             'user_rating': user_rating
         })
+    
+    # Debug: Log if no films found but HTML seems valid
+    if not films and html and not is_cloudflare_challenge(html):
+        # Check if this looks like a valid profile page
+        if 'letterboxd' in html.lower() and ('films' in html.lower() or 'watched' in html.lower()):
+            print(f"⚠️  Warning: No films found but page appears valid. HTML length: {len(html)}")
+            # Try to find any film links as last resort
+            all_film_links = soup.select('a[href*="/film/"]')
+            if all_film_links:
+                print(f"   Found {len(all_film_links)} potential film links, trying to extract...")
+                for link in all_film_links[:100]:  # Increased limit
+                    href = link.get('href', '')
+                    # Only match direct film links, not user film pages
+                    slug_match = re.search(r'^/film/([^/]+)/?$', href)
+                    if slug_match:
+                        slug = slug_match.group(1)
+                        if slug not in seen_slugs:
+                            seen_slugs.add(slug)
+                            title_text = link.get_text(strip=True) or link.get('title', '') or slug.replace('-', ' ').title()
+                            year = None
+                            year_match = re.search(r'\((\d{4})\)', title_text)
+                            if year_match:
+                                year = int(year_match.group(1))
+                                title_text = re.sub(r'\s*\(\d{4}\)\s*', '', title_text).strip()
+                            
+                            if not title_text:
+                                title_text = slug.replace('-', ' ').title()
+                            
+                            films.append({
+                                'title': title_text,
+                                'year': year,
+                                'slug': slug,
+                                'letterboxd_id': '',
+                                'letterboxd_url': f"https://letterboxd.com/film/{slug}/",
+                                'user_rating': None
+                            })
     
     return films
 
