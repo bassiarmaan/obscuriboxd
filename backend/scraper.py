@@ -30,6 +30,116 @@ except:
     TMDB_AVAILABLE = False
     TMDB_API_KEY = None
 
+# Import xml parser for RSS
+import xml.etree.ElementTree as ET
+
+
+async def get_user_films_from_rss(username: str) -> list[dict]:
+    """
+    Get user's films from their RSS feed.
+    This is a fallback when HTML scraping is blocked by Cloudflare.
+    Note: RSS only contains recent diary entries, not all watched films.
+    """
+    rss_url = f"https://letterboxd.com/{username}/rss/"
+    print(f"📡 Fetching films from RSS feed: {rss_url}")
+    
+    timeout = ClientTimeout(total=30, connect=10)
+    headers = get_headers()
+    
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.get(rss_url, headers=headers) as response:
+            if response.status == 404:
+                raise Exception(f"User '{username}' not found")
+            if response.status != 200:
+                raise Exception(f"Failed to fetch RSS feed: HTTP {response.status}")
+            
+            content = await response.text()
+            
+            # Check for Cloudflare challenge
+            if is_cloudflare_challenge(content):
+                raise Exception("RSS feed is blocked by Cloudflare")
+            
+            # Check if we got valid XML
+            if not content.startswith('<?xml'):
+                raise Exception("Invalid RSS response - not XML")
+    
+    # Parse RSS XML
+    films = []
+    seen_slugs = set()
+    
+    try:
+        root = ET.fromstring(content)
+        
+        # Find all items in the RSS feed
+        for item in root.findall('.//item'):
+            film = {}
+            
+            # Get film link to extract slug
+            link_elem = item.find('link')
+            if link_elem is not None and link_elem.text:
+                link = link_elem.text
+                # Extract slug from link like https://letterboxd.com/armbot/film/marty-supreme/
+                slug_match = re.search(r'/film/([^/]+)/?$', link)
+                if slug_match:
+                    film['slug'] = slug_match.group(1)
+            
+            if not film.get('slug') or film['slug'] in seen_slugs:
+                continue
+            seen_slugs.add(film['slug'])
+            
+            # Get letterboxd-specific data using namespaces
+            # The RSS uses namespaces like letterboxd: and tmdb:
+            namespaces = {
+                'letterboxd': 'https://letterboxd.com',
+                'tmdb': 'https://themoviedb.org'
+            }
+            
+            # Get film title
+            film_title = item.find('letterboxd:filmTitle', namespaces)
+            if film_title is not None and film_title.text:
+                film['title'] = film_title.text
+            
+            # Get film year
+            film_year = item.find('letterboxd:filmYear', namespaces)
+            if film_year is not None and film_year.text:
+                try:
+                    film['year'] = int(film_year.text)
+                except ValueError:
+                    pass
+            
+            # Get user's rating
+            member_rating = item.find('letterboxd:memberRating', namespaces)
+            if member_rating is not None and member_rating.text:
+                try:
+                    film['user_rating'] = float(member_rating.text)
+                except ValueError:
+                    pass
+            
+            # Get TMDB movie ID
+            tmdb_id = item.find('tmdb:movieId', namespaces)
+            if tmdb_id is not None and tmdb_id.text:
+                film['tmdb_id'] = tmdb_id.text
+            
+            # Extract poster URL from description (it's in an img tag)
+            description = item.find('description')
+            if description is not None and description.text:
+                poster_match = re.search(r'<img src="([^"]+)"', description.text)
+                if poster_match:
+                    film['poster_path'] = poster_match.group(1)
+            
+            # Build letterboxd URL
+            film['letterboxd_url'] = f"https://letterboxd.com/film/{film['slug']}/"
+            
+            films.append(film)
+        
+        print(f"✅ Found {len(films)} films in RSS feed")
+        
+    except ET.ParseError as e:
+        print(f"⚠️  Failed to parse RSS XML: {e}")
+        raise Exception(f"Failed to parse RSS feed: {e}")
+    
+    return films
+
 
 async def get_user_films(username: str) -> list[dict]:
     """
@@ -57,6 +167,18 @@ async def get_user_films(username: str) -> list[dict]:
                 if is_cloudflare_challenge(html):
                     print(f"🛡️  Cloudflare challenge detected! HTML preview: {html[:300]}")
                     if page == 1:
+                        # Try RSS feed as fallback
+                        print(f"🔄 Trying RSS feed as fallback...")
+                        try:
+                            rss_films = await get_user_films_from_rss(username)
+                            if rss_films:
+                                print(f"✅ RSS fallback successful! Found {len(rss_films)} films")
+                                films = rss_films
+                                break  # Exit the while loop and continue with these films
+                        except Exception as rss_error:
+                            print(f"⚠️  RSS fallback failed: {rss_error}")
+                        
+                        # If RSS also failed, raise the original error
                         raise Exception(
                             f"Cloudflare protection detected. Letterboxd is blocking automated requests. "
                             f"This may be temporary. Please try again later or check if your IP is blocked."
