@@ -12,6 +12,14 @@ import os
 from database import save_films, get_films_by_slugs
 from aiohttp import ClientTimeout
 
+# Import cloudscraper for Cloudflare bypass
+try:
+    import cloudscraper
+    CLOUDSCRAPER_AVAILABLE = True
+except ImportError:
+    CLOUDSCRAPER_AVAILABLE = False
+    cloudscraper = None
+
 # Import TMDb functions for poster fetching
 try:
     from tmdb import search_film, TMDB_API_KEY
@@ -39,34 +47,45 @@ async def get_user_films(username: str) -> list[dict]:
             url = f"https://letterboxd.com/{username}/films/page/{page}/"
             
             try:
-                async with session.get(url, headers=get_headers()) as response:
-                    if response.status == 404:
-                        if page == 1:
-                            raise Exception(f"User '{username}' not found")
+                # Try using cloudscraper first to bypass Cloudflare
+                html = await fetch_with_cloudflare_bypass(url, get_headers())
+                
+                # Check if we got a Cloudflare challenge
+                if is_cloudflare_challenge(html):
+                    if page == 1:
+                        raise Exception(
+                            f"Cloudflare protection detected. Letterboxd is blocking automated requests. "
+                            f"This may be temporary. Please try again later or check if your IP is blocked."
+                        )
+                    break
+                
+                # Check for 404 by looking for common 404 indicators
+                if 'not found' in html.lower() or '404' in html.lower():
+                    if page == 1:
+                        raise Exception(f"User '{username}' not found")
+                    break
+                
+                page_films = parse_films_page(html)
+                
+                if not page_films:
+                    consecutive_empty_pages += 1
+                    if consecutive_empty_pages >= max_empty_pages:
                         break
-                    
-                    if response.status != 200:
-                        break
-                    
-                    html = await response.text()
-                    page_films = parse_films_page(html)
-                    
-                    if not page_films:
-                        consecutive_empty_pages += 1
-                        if consecutive_empty_pages >= max_empty_pages:
-                            break
-                        page += 1
-                        continue
-                    
-                    consecutive_empty_pages = 0  # Reset counter
-                    films.extend(page_films)
                     page += 1
-                    
-                    # Rate limiting - be nice to Letterboxd
-                    await asyncio.sleep(0.1)  # Reduced delay
+                    continue
+                
+                consecutive_empty_pages = 0  # Reset counter
+                films.extend(page_films)
+                page += 1
+                
+                # Rate limiting - be nice to Letterboxd
+                await asyncio.sleep(0.1)  # Reduced delay
                     
             except aiohttp.ClientError as e:
                 raise Exception(f"Error fetching data: {str(e)}")
+            except Exception as e:
+                # Re-raise our custom exceptions
+                raise
     
     # Check database first for existing films
     slugs = [f.get('slug') for f in films if f.get('slug')]
@@ -245,26 +264,65 @@ async def get_film_stats(session: aiohttp.ClientSession, film: dict, retries: in
             stats_url = f"https://letterboxd.com/csi/film/{slug}/stats/"
             main_url = f"https://letterboxd.com/film/{slug}/"
             
-            # Fetch both pages concurrently
-            stats_task = session.get(stats_url, headers=get_headers())
-            main_task = session.get(main_url, headers=get_headers())
-            
-            stats_response, main_response = await asyncio.gather(
-                stats_task, main_task, return_exceptions=True
-            )
-            
+            headers = get_headers()
             stats = {}
             
-            # Parse stats page
-            if not isinstance(stats_response, Exception) and stats_response.status == 200:
-                html = await stats_response.text()
-                stats = parse_stats_html(html)
-            
-            # Parse main page
-            if not isinstance(main_response, Exception) and main_response.status == 200:
-                main_html = await main_response.text()
-                main_stats = parse_film_page(main_html)
-                stats.update({k: v for k, v in main_stats.items() if v})
+            # Use cloudscraper to bypass Cloudflare if available
+            if CLOUDSCRAPER_AVAILABLE:
+                loop = asyncio.get_event_loop()
+                scraper = cloudscraper.create_scraper()
+                
+                def fetch_stats():
+                    try:
+                        return scraper.get(stats_url, headers=headers, timeout=15)
+                    except:
+                        return None
+                
+                def fetch_main():
+                    try:
+                        return scraper.get(main_url, headers=headers, timeout=15)
+                    except:
+                        return None
+                
+                stats_response, main_response = await asyncio.gather(
+                    loop.run_in_executor(None, fetch_stats),
+                    loop.run_in_executor(None, fetch_main),
+                    return_exceptions=True
+                )
+                
+                # Parse stats page
+                if not isinstance(stats_response, Exception) and stats_response:
+                    html = stats_response.text if hasattr(stats_response, 'text') else ""
+                    if html and not is_cloudflare_challenge(html):
+                        stats = parse_stats_html(html)
+                
+                # Parse main page
+                if not isinstance(main_response, Exception) and main_response:
+                    main_html = main_response.text if hasattr(main_response, 'text') else ""
+                    if main_html and not is_cloudflare_challenge(main_html):
+                        main_stats = parse_film_page(main_html)
+                        stats.update({k: v for k, v in main_stats.items() if v})
+            else:
+                # Fallback to aiohttp
+                stats_task = session.get(stats_url, headers=headers)
+                main_task = session.get(main_url, headers=headers)
+                
+                stats_response, main_response = await asyncio.gather(
+                    stats_task, main_task, return_exceptions=True
+                )
+                
+                # Parse stats page
+                if not isinstance(stats_response, Exception) and stats_response.status == 200:
+                    html = await stats_response.text()
+                    if not is_cloudflare_challenge(html):
+                        stats = parse_stats_html(html)
+                
+                # Parse main page
+                if not isinstance(main_response, Exception) and main_response.status == 200:
+                    main_html = await main_response.text()
+                    if not is_cloudflare_challenge(main_html):
+                        main_stats = parse_film_page(main_html)
+                        stats.update({k: v for k, v in main_stats.items() if v})
             
             # TMDb poster lookup - skip during bulk scraping for speed
             # Can be added later via add_posters.py script
@@ -284,9 +342,9 @@ async def get_film_stats(session: aiohttp.ClientSession, film: dict, retries: in
                 continue
             # Don't print error on last attempt - too noisy
             return {}
-        except Exception as e:
+    except Exception as e:
             # Don't retry on other errors
-            return {}
+        return {}
     
     return {}
 
@@ -431,8 +489,48 @@ def get_headers() -> dict:
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.5',
+        'Accept-Encoding': 'gzip, deflate, br',
         'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'none',
+        'Cache-Control': 'max-age=0',
     }
+
+
+def is_cloudflare_challenge(html: str) -> bool:
+    """Check if the HTML response is a Cloudflare challenge page."""
+    if not html:
+        return False
+    return 'Just a moment' in html or 'cf-browser-verification' in html or 'challenge-platform' in html
+
+
+async def fetch_with_cloudflare_bypass(url: str, headers: dict = None) -> str:
+    """
+    Fetch URL with Cloudflare bypass using cloudscraper.
+    Falls back to aiohttp if cloudscraper is not available.
+    """
+    if CLOUDSCRAPER_AVAILABLE:
+        # Use cloudscraper in a thread pool to avoid blocking
+        loop = asyncio.get_event_loop()
+        scraper = cloudscraper.create_scraper()
+        try:
+            response = await loop.run_in_executor(
+                None, 
+                lambda: scraper.get(url, headers=headers or get_headers(), timeout=30)
+            )
+            return response.text
+        except Exception as e:
+            print(f"⚠️  Cloudscraper failed: {str(e)}, falling back to aiohttp")
+    
+    # Fallback to aiohttp
+    timeout = ClientTimeout(total=30, connect=10)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.get(url, headers=headers or get_headers()) as response:
+            if response.status != 200:
+                raise Exception(f"HTTP {response.status} error")
+            return await response.text()
 
 
 def parse_films_page(html: str) -> list[dict]:
