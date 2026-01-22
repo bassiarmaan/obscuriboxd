@@ -43,25 +43,39 @@ async def get_user_films_from_rss(username: str) -> list[dict]:
     rss_url = f"https://letterboxd.com/{username}/rss/"
     print(f"📡 Fetching films from RSS feed: {rss_url}")
     
-    timeout = ClientTimeout(total=30, connect=10)
-    headers = get_headers()
-    
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.get(rss_url, headers=headers) as response:
-            if response.status == 404:
-                raise Exception(f"User '{username}' not found")
-            if response.status != 200:
-                raise Exception(f"Failed to fetch RSS feed: HTTP {response.status}")
-            
-            content = await response.text()
-            
-            # Check for Cloudflare challenge
-            if is_cloudflare_challenge(content):
-                raise Exception("RSS feed is blocked by Cloudflare")
-            
-            # Check if we got valid XML
-            if not content.startswith('<?xml'):
-                raise Exception("Invalid RSS response - not XML")
+    try:
+        timeout = ClientTimeout(total=30, connect=10)
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+            'Accept': 'application/rss+xml, application/xml, text/xml, */*',
+        }
+        
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(rss_url, headers=headers) as response:
+                print(f"   RSS response status: {response.status}")
+                if response.status == 404:
+                    raise Exception(f"User '{username}' not found")
+                if response.status != 200:
+                    raise Exception(f"Failed to fetch RSS feed: HTTP {response.status}")
+                
+                content = await response.text()
+                print(f"   RSS content length: {len(content)}")
+                print(f"   RSS content preview: {content[:200]}")
+                
+                # Check for Cloudflare challenge
+                if is_cloudflare_challenge(content):
+                    raise Exception("RSS feed is blocked by Cloudflare")
+                
+                # Check if we got valid XML
+                if not content.startswith('<?xml'):
+                    print(f"   ⚠️ RSS content doesn't start with <?xml")
+                    raise Exception(f"Invalid RSS response - not XML (starts with: {content[:50]})")
+    except aiohttp.ClientError as e:
+        print(f"   ❌ aiohttp error: {e}")
+        raise Exception(f"Network error fetching RSS: {e}")
+    except Exception as e:
+        print(f"   ❌ RSS fetch error: {e}")
+        raise
     
     # Parse RSS XML
     films = []
