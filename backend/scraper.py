@@ -342,9 +342,9 @@ async def get_film_stats(session: aiohttp.ClientSession, film: dict, retries: in
                 continue
             # Don't print error on last attempt - too noisy
             return {}
-    except Exception as e:
+        except Exception as e:
             # Don't retry on other errors
-        return {}
+            return {}
     
     return {}
 
