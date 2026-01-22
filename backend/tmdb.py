@@ -81,7 +81,7 @@ async def enrich_films_with_tmdb(films: list[dict]) -> list[dict]:
             # Rate limiting
             if i + batch_size < len(films_to_enrich):  # Don't sleep after last batch
                 await asyncio.sleep(delay)
-    
+        
     # Combine films from DB and newly enriched films
     return enriched_from_db + enriched
 
