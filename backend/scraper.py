@@ -255,6 +255,20 @@ async def get_user_films(username: str) -> list[dict]:
             except aiohttp.ClientError as e:
                 raise Exception(f"Error fetching data: {str(e)}")
             except Exception as e:
+                error_msg = str(e)
+                # Check if Cloudflare is blocking - try RSS fallback
+                if "CLOUDFLARE_BLOCKED" in error_msg or "403" in error_msg:
+                    if page == 1 and not used_rss_fallback:
+                        print(f"🔄 Cloudflare blocking detected, trying RSS feed as fallback...")
+                        try:
+                            rss_films = await get_user_films_from_rss(username)
+                            if rss_films:
+                                print(f"✅ RSS fallback successful! Found {len(rss_films)} films")
+                                films = rss_films
+                                used_rss_fallback = True
+                                break  # Exit the while loop
+                        except Exception as rss_error:
+                            print(f"⚠️  RSS fallback also failed: {rss_error}")
                 # Re-raise our custom exceptions
                 raise
     
@@ -758,6 +772,10 @@ async def fetch_with_cloudflare_bypass(url: str, headers: dict = None) -> str:
             # If it's a 404, don't fall back - raise it
             if "404" in error_msg or "Not Found" in error_msg:
                 raise
+            # If it's a 403 Forbidden, Cloudflare is blocking - raise to trigger RSS fallback
+            if "403" in error_msg or "Forbidden" in error_msg:
+                print(f"   🛡️ Cloudflare blocking detected (403) - will try RSS fallback")
+                raise Exception("CLOUDFLARE_BLOCKED: 403 Forbidden")
             print(f"   Falling back to aiohttp...")
     
     # Fallback to aiohttp
