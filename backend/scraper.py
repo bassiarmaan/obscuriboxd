@@ -156,6 +156,7 @@ async def get_user_films(username: str) -> list[dict]:
     page = 1
     consecutive_empty_pages = 0
     max_empty_pages = 2  # Stop after 2 consecutive empty pages
+    used_rss_fallback = False  # Track if we used RSS (can't scrape if Cloudflare is blocking)
     
     # Create session with timeout to prevent hanging
     timeout = ClientTimeout(total=30, connect=10)
@@ -179,6 +180,7 @@ async def get_user_films(username: str) -> list[dict]:
                             if rss_films:
                                 print(f"✅ RSS fallback successful! Found {len(rss_films)} films")
                                 films = rss_films
+                                used_rss_fallback = True  # Mark that we used RSS
                                 break  # Exit the while loop and continue with these films
                         except Exception as rss_error:
                             print(f"⚠️  RSS fallback failed: {rss_error}")
@@ -306,8 +308,20 @@ async def get_user_films(username: str) -> list[dict]:
     MAX_FILMS_TO_SCRAPE_PER_REQUEST = int(os.getenv("MAX_FILMS_TO_SCRAPE", "100"))  # Default to 100 instead of 20
     
     if films_to_scrape:
+        # If we used RSS fallback, Cloudflare is blocking so we can't scrape stats either
+        # Just use what we have (films will have default obscurity score)
+        if used_rss_fallback:
+            print(f"📊 Skipping scraping for {len(films_to_scrape)} films (using RSS fallback, Cloudflare blocking)")
+            print(f"   ⚠️  Films without watch data will use default obscurity scores")
+            # Use DB data if available, otherwise use RSS data as-is
+            for film in films_to_scrape:
+                slug = film.get('slug')
+                if slug and slug in db_films:
+                    db_film = db_films[slug]
+                    film.update({k: v for k, v in db_film.items() if k != 'user_rating'})
+                enriched_films.append(film)
         # If scraping is disabled, use what we have from DB (even if incomplete)
-        if MAX_FILMS_TO_SCRAPE_PER_REQUEST == 0:
+        elif MAX_FILMS_TO_SCRAPE_PER_REQUEST == 0:
             print(f"📊 Found {len(films_to_scrape)} films to scrape (scraping disabled on server)")
             # Use DB data if available, even if incomplete
             for film in films_to_scrape:
