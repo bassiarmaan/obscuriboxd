@@ -70,6 +70,12 @@ async def get_user_films_from_rss(username: str) -> list[dict]:
     try:
         root = ET.fromstring(content)
         
+        # Define namespaces - ElementTree requires explicit namespace handling
+        namespaces = {
+            'letterboxd': 'https://letterboxd.com',
+            'tmdb': 'https://themoviedb.org'
+        }
+        
         # Find all items in the RSS feed
         for item in root.findall('.//item'):
             film = {}
@@ -88,19 +94,15 @@ async def get_user_films_from_rss(username: str) -> list[dict]:
             seen_slugs.add(film['slug'])
             
             # Get letterboxd-specific data using namespaces
-            # The RSS uses namespaces like letterboxd: and tmdb:
-            namespaces = {
-                'letterboxd': 'https://letterboxd.com',
-                'tmdb': 'https://themoviedb.org'
-            }
+            # ElementTree requires {namespace_uri}element_name format
             
             # Get film title
-            film_title = item.find('letterboxd:filmTitle', namespaces)
+            film_title = item.find('{https://letterboxd.com}filmTitle')
             if film_title is not None and film_title.text:
                 film['title'] = film_title.text
             
             # Get film year
-            film_year = item.find('letterboxd:filmYear', namespaces)
+            film_year = item.find('{https://letterboxd.com}filmYear')
             if film_year is not None and film_year.text:
                 try:
                     film['year'] = int(film_year.text)
@@ -108,7 +110,7 @@ async def get_user_films_from_rss(username: str) -> list[dict]:
                     pass
             
             # Get user's rating
-            member_rating = item.find('letterboxd:memberRating', namespaces)
+            member_rating = item.find('{https://letterboxd.com}memberRating')
             if member_rating is not None and member_rating.text:
                 try:
                     film['user_rating'] = float(member_rating.text)
@@ -116,7 +118,7 @@ async def get_user_films_from_rss(username: str) -> list[dict]:
                     pass
             
             # Get TMDB movie ID
-            tmdb_id = item.find('tmdb:movieId', namespaces)
+            tmdb_id = item.find('{https://themoviedb.org}movieId')
             if tmdb_id is not None and tmdb_id.text:
                 film['tmdb_id'] = tmdb_id.text
             
@@ -129,6 +131,9 @@ async def get_user_films_from_rss(username: str) -> list[dict]:
             
             # Build letterboxd URL
             film['letterboxd_url'] = f"https://letterboxd.com/film/{film['slug']}/"
+            
+            # Add empty letterboxd_id for compatibility
+            film['letterboxd_id'] = ''
             
             films.append(film)
         
