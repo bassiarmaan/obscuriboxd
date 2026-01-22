@@ -55,6 +55,7 @@ async def get_user_films(username: str) -> list[dict]:
                 
                 # Check if we got a Cloudflare challenge
                 if is_cloudflare_challenge(html):
+                    print(f"🛡️  Cloudflare challenge detected! HTML preview: {html[:300]}")
                     if page == 1:
                         raise Exception(
                             f"Cloudflare protection detected. Letterboxd is blocking automated requests. "
@@ -534,7 +535,25 @@ def is_cloudflare_challenge(html: str) -> bool:
     """Check if the HTML response is a Cloudflare challenge page."""
     if not html:
         return False
-    return 'Just a moment' in html or 'cf-browser-verification' in html or 'challenge-platform' in html
+    # Check for various Cloudflare challenge indicators
+    cf_indicators = [
+        'Just a moment',
+        'cf-browser-verification',
+        'challenge-platform',
+        'cf_chl_opt',
+        'cf-challenge',
+        'Checking your browser',
+        'Enable JavaScript and cookies to continue',
+        'cf-spinner',
+        'cf_clearance',
+        'Cloudflare Ray ID',
+        '_cf_chl_tk',
+    ]
+    html_lower = html.lower()
+    for indicator in cf_indicators:
+        if indicator.lower() in html_lower:
+            return True
+    return False
 
 
 async def fetch_with_cloudflare_bypass(url: str, headers: dict = None) -> str:
@@ -544,13 +563,23 @@ async def fetch_with_cloudflare_bypass(url: str, headers: dict = None) -> str:
     """
     request_headers = headers or get_headers()
     
+    print(f"🌐 Attempting to fetch: {url}")
+    print(f"   Cloudscraper available: {CLOUDSCRAPER_AVAILABLE}")
+    
     if CLOUDSCRAPER_AVAILABLE:
         # Use cloudscraper in a thread pool to avoid blocking
         loop = asyncio.get_event_loop()
-        scraper = cloudscraper.create_scraper()
+        scraper = cloudscraper.create_scraper(
+            browser={
+                'browser': 'chrome',
+                'platform': 'darwin',
+                'desktop': True,
+            }
+        )
         try:
             def fetch():
                 resp = scraper.get(url, headers=request_headers, timeout=30, allow_redirects=True)
+                print(f"   Response status: {resp.status_code}")
                 # Verify we got a successful response
                 if resp.status_code == 404:
                     raise Exception(f"404 Not Found: User or page does not exist")
@@ -559,6 +588,10 @@ async def fetch_with_cloudflare_bypass(url: str, headers: dict = None) -> str:
                 html_text = resp.text
                 if not html_text:
                     raise Exception("Empty response received")
+                # Check if we got a Cloudflare challenge even with 200 status
+                if is_cloudflare_challenge(html_text):
+                    print(f"   ⚠️ Cloudscraper returned Cloudflare challenge page!")
+                    print(f"   HTML preview: {html_text[:200]}")
                 return html_text
             
             html = await loop.run_in_executor(None, fetch)
