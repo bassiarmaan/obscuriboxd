@@ -214,8 +214,16 @@ async def get_user_films(username: str) -> list[dict]:
                     print(f"⚠️  404 detected on page {page}, stopping")
                     break
                 
-                # Check if profile is private
-                if 'private' in html.lower() and 'profile' in html.lower():
+                # Check if profile is private - look for specific Letterboxd private profile messages
+                # Don't match false positives like "private-note-modal.css" in stylesheets
+                private_indicators = [
+                    "this person's profile is private",
+                    "this profile is private",
+                    "has a private profile",
+                ]
+                html_lower = html.lower()
+                is_private = any(indicator in html_lower for indicator in private_indicators)
+                if is_private:
                     if page == 1:
                         raise Exception(f"User '{username}' profile is private. Make sure the profile is public.")
                     break
@@ -475,32 +483,40 @@ async def get_film_stats(session: aiohttp.ClientSession, film: dict, retries: in
                 
                 def fetch_stats():
                     try:
-                        return scraper.get(stats_url, headers=headers, timeout=15)
+                        resp = scraper.get(stats_url, headers=headers, timeout=15)
+                        if resp.status_code == 200:
+                            # Force UTF-8 encoding before accessing .text (cloudscraper encoding detection can fail)
+                            resp.encoding = 'utf-8'
+                            return resp.text
+                        return ""
                     except:
-                        return None
+                        return ""
                 
                 def fetch_main():
                     try:
-                        return scraper.get(main_url, headers=headers, timeout=15)
+                        resp = scraper.get(main_url, headers=headers, timeout=15)
+                        if resp.status_code == 200:
+                            # Force UTF-8 encoding before accessing .text (cloudscraper encoding detection can fail)
+                            resp.encoding = 'utf-8'
+                            return resp.text
+                        return ""
                     except:
-                        return None
+                        return ""
                 
-                stats_response, main_response = await asyncio.gather(
+                stats_html, main_html = await asyncio.gather(
                     loop.run_in_executor(None, fetch_stats),
                     loop.run_in_executor(None, fetch_main),
                     return_exceptions=True
                 )
                 
                 # Parse stats page
-                if not isinstance(stats_response, Exception) and stats_response:
-                    html = stats_response.text if hasattr(stats_response, 'text') else ""
-                    if html and not is_cloudflare_challenge(html):
-                        stats = parse_stats_html(html)
+                if not isinstance(stats_html, Exception) and stats_html:
+                    if not is_cloudflare_challenge(stats_html):
+                        stats = parse_stats_html(stats_html)
                 
                 # Parse main page
-                if not isinstance(main_response, Exception) and main_response:
-                    main_html = main_response.text if hasattr(main_response, 'text') else ""
-                    if main_html and not is_cloudflare_challenge(main_html):
+                if not isinstance(main_html, Exception) and main_html:
+                    if not is_cloudflare_challenge(main_html):
                         main_stats = parse_film_page(main_html)
                         stats.update({k: v for k, v in main_stats.items() if v})
             else:
@@ -690,7 +706,7 @@ def get_headers() -> dict:
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.5',
-        'Accept-Encoding': 'gzip, deflate, br',
+        'Accept-Encoding': 'gzip, deflate',  # Note: removed 'br' (brotli) as cloudscraper may not decode it properly
         'Connection': 'keep-alive',
         'Upgrade-Insecure-Requests': '1',
         'Sec-Fetch-Dest': 'document',
@@ -704,24 +720,27 @@ def is_cloudflare_challenge(html: str) -> bool:
     """Check if the HTML response is a Cloudflare challenge page."""
     if not html:
         return False
-    # Check for various Cloudflare challenge indicators
-    cf_indicators = [
-        'Just a moment',
-        'cf-browser-verification',
-        'challenge-platform',
-        'cf_chl_opt',
-        'cf-challenge',
-        'Checking your browser',
-        'Enable JavaScript and cookies to continue',
-        'cf-spinner',
-        'cf_clearance',
-        'Cloudflare Ray ID',
-        '_cf_chl_tk',
-    ]
+    
+    # Real Letterboxd pages are large (100KB+), challenge pages are small (<20KB)
+    # If the page is large, it's almost certainly not a challenge page
+    if len(html) > 50000:
+        return False
+    
     html_lower = html.lower()
-    for indicator in cf_indicators:
-        if indicator.lower() in html_lower:
+    
+    # Strong indicators that ONLY appear on challenge pages (not normal pages)
+    strong_indicators = [
+        'just a moment',
+        'checking your browser',
+        'enable javascript and cookies to continue',
+        'cf-browser-verification',
+        'cf-spinner',
+    ]
+    
+    for indicator in strong_indicators:
+        if indicator in html_lower:
             return True
+    
     return False
 
 
@@ -738,22 +757,19 @@ async def fetch_with_cloudflare_bypass(url: str, headers: dict = None) -> str:
     if CLOUDSCRAPER_AVAILABLE:
         # Use cloudscraper in a thread pool to avoid blocking
         loop = asyncio.get_event_loop()
-        scraper = cloudscraper.create_scraper(
-            browser={
-                'browser': 'chrome',
-                'platform': 'darwin',
-                'desktop': True,
-            }
-        )
+        # Create scraper with minimal configuration - let cloudscraper auto-detect
+        scraper = cloudscraper.create_scraper()
         try:
             def fetch():
-                resp = scraper.get(url, headers=request_headers, timeout=30, allow_redirects=True)
+                resp = scraper.get(url, timeout=30, allow_redirects=True)
                 print(f"   Response status: {resp.status_code}")
                 # Verify we got a successful response
                 if resp.status_code == 404:
                     raise Exception(f"404 Not Found: User or page does not exist")
                 elif resp.status_code != 200:
                     raise Exception(f"HTTP {resp.status_code} error: {resp.reason}")
+                # Force UTF-8 encoding before accessing .text (cloudscraper encoding detection can fail)
+                resp.encoding = 'utf-8'
                 html_text = resp.text
                 if not html_text:
                     raise Exception("Empty response received")
@@ -797,23 +813,26 @@ def parse_films_page(html: str) -> list[dict]:
     seen_slugs = set()
     
     # Try multiple selectors as Letterboxd may have changed their structure
-    # Method 1: React component with LazyPoster
-    film_components = soup.select('div.react-component[data-component-class="LazyPoster"]')
+    # Method 1: Elements with data-target-link containing film slug (2025+ structure)
+    film_components = soup.select('[data-target-link*="/film/"]')
     
-    # Method 2: Alternative selector for film posters
+    # Method 2: React component with LazyPoster
+    if not film_components:
+        film_components = soup.select('div.react-component[data-component-class="LazyPoster"]')
+    
+    # Method 3: Alternative selector for film posters
     if not film_components:
         film_components = soup.select('li[data-film-slug]')
     
-    # Method 3: Look for film links in the films list
+    # Method 4: Look for film links in the films list
     if not film_components:
         film_components = soup.select('div.film-poster, li.film-detail')
     
-    # Method 4: Try finding any element with data-item-slug
+    # Method 5: Try finding any element with data-item-slug
     if not film_components:
         film_components = soup.select('[data-item-slug]')
     
-    # Method 5: NEW - Look for poster images in list items (current Letterboxd structure 2025+)
-    # Structure: <li><div><img alt="Poster for Film Name (Year)"><a href="/film/slug/">...</a></div></li>
+    # Method 6: Look for poster images in list items
     if not film_components:
         film_components = soup.select('li img[alt^="Poster for"]')
     
@@ -822,8 +841,16 @@ def parse_films_page(html: str) -> list[dict]:
         slug = ''
         film_id = ''
         
-        # Check if this is a poster img element (Method 5)
-        if component.name == 'img' and component.get('alt', '').startswith('Poster for'):
+        # Method 1: Extract from data-target-link attribute (2025+ structure)
+        target_link = component.get('data-target-link', '')
+        if target_link and '/film/' in target_link:
+            slug_match = re.search(r'/film/([^/]+)/?', target_link)
+            if slug_match:
+                slug = slug_match.group(1)
+                film_id = component.get('data-film-id', '')
+        
+        # Check if this is a poster img element (Method 6)
+        elif component.name == 'img' and component.get('alt', '').startswith('Poster for'):
             # Extract title and year from alt text: "Poster for Film Name (Year)"
             alt_text = component.get('alt', '')
             item_name = alt_text.replace('Poster for ', '')
@@ -846,16 +873,25 @@ def parse_films_page(html: str) -> list[dict]:
                    component.get('data-film-slug', ''))
             film_id = component.get('data-film-id', '')
             
-            # If we still don't have a slug, try extracting from href
+            # If we still don't have a slug, try extracting from href or data-target-link
             if not slug:
-                link = component.find('a', href=re.compile(r'/film/'))
-                if link:
-                    href = link.get('href', '')
-                    slug_match = re.search(r'/film/([^/]+)/?', href)
+                # Try data-target-link first
+                target_link = component.get('data-target-link', '')
+                if target_link:
+                    slug_match = re.search(r'/film/([^/]+)/?', target_link)
                     if slug_match:
                         slug = slug_match.group(1)
-                        if not item_name:
-                            item_name = link.get_text(strip=True) or link.get('title', '')
+                
+                # Fall back to href
+                if not slug:
+                    link = component.find('a', href=re.compile(r'/film/'))
+                    if link:
+                        href = link.get('href', '')
+                        slug_match = re.search(r'/film/([^/]+)/?', href)
+                        if slug_match:
+                            slug = slug_match.group(1)
+                            if not item_name:
+                                item_name = link.get_text(strip=True) or link.get('title', '')
         
         if not slug or slug in seen_slugs:
             continue
