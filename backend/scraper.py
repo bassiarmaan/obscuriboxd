@@ -207,13 +207,6 @@ async def get_user_films(username: str) -> list[dict]:
                     print(f"⚠️  Cloudflare challenge on page {page}, stopping")
                     break
                 
-                # Check for 404 by looking for common 404 indicators
-                if 'not found' in html.lower() or '404' in html.lower() or 'page not found' in html.lower():
-                    if page == 1:
-                        raise Exception(f"User '{username}' not found")
-                    print(f"⚠️  404 detected on page {page}, stopping")
-                    break
-                
                 # Check if profile is private - look for specific Letterboxd private profile messages
                 # Don't match false positives like "private-note-modal.css" in stylesheets
                 private_indicators = [

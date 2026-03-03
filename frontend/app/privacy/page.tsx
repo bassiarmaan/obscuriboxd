@@ -50,7 +50,7 @@ export default function PrivacyPage() {
 
               <Section title="Cookies">
                 <p>
-                  We don't use tracking cookies. Only essential cookies for site functionality may be used.
+                  We don&apos;t use tracking cookies. Only essential cookies for site functionality may be used.
                 </p>
               </Section>
 
