@@ -44,6 +44,15 @@ export default function Results({ data }: Props) {
         <ObscurityScore score={data.obscurity_score} username={data.username} />
       </motion.div>
 
+      {data.is_partial_data && (
+        <motion.div
+          variants={item}
+          className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-200"
+        >
+          {data.data_note || 'Full profile scraping was blocked, so this result is based on recent RSS films only.'}
+        </motion.div>
+      )}
+
       {/* Quick Stats */}
       <motion.div variants={item} className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <StatCard label="Films" value={data.total_films.toLocaleString()} color="orange" />

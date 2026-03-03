@@ -66,6 +66,58 @@ class AnalyzeEndpointTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json()["detail"], "Username is required")
 
+    def test_analyze_marks_partial_data_for_rss_fallback(self) -> None:
+        sample_films = [
+            {
+                "title": "Film A",
+                "year": 1999,
+                "slug": "film-a",
+                "letterboxd_watches": 1_000_000,
+                "director": "Dir A",
+                "poster_path": "/a.jpg",
+                "genres": ["Drama"],
+                "production_countries": ["USA"],
+                "user_rating": 4.0,
+                "_obscuriboxd_data_source": "rss_fallback",
+            },
+            {
+                "title": "Film B",
+                "year": 1975,
+                "slug": "film-b",
+                "letterboxd_watches": 5_000,
+                "director": "Dir B",
+                "poster_path": "/b.jpg",
+                "genres": ["Horror"],
+                "production_countries": ["France"],
+                "user_rating": 3.5,
+                "_obscuriboxd_data_source": "rss_fallback",
+            },
+            {
+                "title": "Film C",
+                "year": 2010,
+                "slug": "film-c",
+                "letterboxd_watches": 200_000,
+                "director": "Dir A",
+                "poster_path": "/c.jpg",
+                "genres": ["Drama", "Mystery"],
+                "production_countries": ["USA"],
+                "user_rating": 4.5,
+                "_obscuriboxd_data_source": "rss_fallback",
+            },
+        ]
+
+        async def fake_get_user_films(username: str) -> list[dict]:
+            return sample_films
+
+        with patch.object(main, "get_user_films", new=fake_get_user_films):
+            response = self.client.post("/analyze", json={"username": "testuser"})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["data_source"], "rss_fallback")
+        self.assertTrue(payload["is_partial_data"])
+        self.assertIn("only recent RSS films were analyzed", payload["data_note"])
+
 
 class ScraperRegressionTests(unittest.IsolatedAsyncioTestCase):
     async def test_get_user_films_ignores_404_substring_in_valid_html(self) -> None:

@@ -7,6 +7,7 @@ from database import init_database, get_stats
 import os
 
 app = FastAPI(title="Obscuriboxd API", version="1.0.0")
+DATA_SOURCE_MARKER = "_obscuriboxd_data_source"
 
 # CORS for frontend
 # In production, set FRONTEND_URL environment variable to your Vercel domain
@@ -80,6 +81,9 @@ class AnalyzeResponse(BaseModel):
     rating_distribution: dict[str, int]
     mood_analysis: dict[str, float]
     films_by_decade: dict[str, list[dict]]
+    data_source: str = "full_scrape"
+    is_partial_data: bool = False
+    data_note: str | None = None
 
 
 @app.get("/")
@@ -184,6 +188,15 @@ async def analyze_user(request: AnalyzeRequest):
             print(f"Calculator traceback:\n{traceback.format_exc()}")
             raise
         
+        used_rss_fallback = any(f.get(DATA_SOURCE_MARKER) == "rss_fallback" for f in films)
+        stats["data_source"] = "rss_fallback" if used_rss_fallback else "full_scrape"
+        stats["is_partial_data"] = used_rss_fallback
+        stats["data_note"] = (
+            "Letterboxd blocked full profile scraping from this server, so only recent RSS films were analyzed."
+            if used_rss_fallback
+            else None
+        )
+
         print(f"📤 Returning stats: obscurity_score={stats.get('obscurity_score')}, total_films={stats.get('total_films')}")
         return stats
         
@@ -209,5 +222,4 @@ async def analyze_user(request: AnalyzeRequest):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
-
 

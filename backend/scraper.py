@@ -33,6 +33,8 @@ except:
 # Import xml parser for RSS
 import xml.etree.ElementTree as ET
 
+DATA_SOURCE_MARKER = "_obscuriboxd_data_source"
+
 
 async def get_user_films_from_rss(username: str) -> list[dict]:
     """
@@ -400,6 +402,10 @@ async def get_user_films(username: str) -> list[dict]:
         print(f"✅ All {len(films)} films found in database with complete information!")
         print(f"   💾 100% from database - no scraping needed!")
     
+    if used_rss_fallback:
+        for film in enriched_films:
+            film[DATA_SOURCE_MARKER] = "rss_fallback"
+
     return enriched_films
 
 
@@ -781,10 +787,8 @@ async def fetch_with_cloudflare_bypass(url: str, headers: dict = None) -> str:
             # If it's a 404, don't fall back - raise it
             if "404" in error_msg or "Not Found" in error_msg:
                 raise
-            # If it's a 403 Forbidden, Cloudflare is blocking - raise to trigger RSS fallback
             if "403" in error_msg or "Forbidden" in error_msg:
-                print(f"   🛡️ Cloudflare blocking detected (403) - will try RSS fallback")
-                raise Exception("CLOUDFLARE_BLOCKED: 403 Forbidden")
+                print(f"   🛡️ Cloudflare blocking detected via cloudscraper (403)")
             print(f"   Falling back to aiohttp...")
     
     # Fallback to aiohttp
@@ -793,8 +797,14 @@ async def fetch_with_cloudflare_bypass(url: str, headers: dict = None) -> str:
         async with session.get(url, headers=request_headers) as response:
             if response.status != 200:
                 error_text = await response.text()
+                if response.status == 403:
+                    print(f"   🛡️ aiohttp also received 403 for {url}")
+                    raise Exception("CLOUDFLARE_BLOCKED: 403 Forbidden")
                 raise Exception(f"HTTP {response.status} error: {response.reason}. Response: {error_text[:200]}")
             html = await response.text()
+            if is_cloudflare_challenge(html):
+                print(f"   🛡️ aiohttp returned Cloudflare challenge page")
+                raise Exception("CLOUDFLARE_BLOCKED: challenge page")
             print(f"✅ Successfully fetched {url} via aiohttp (length: {len(html)})")
             return html
 

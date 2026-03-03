@@ -29,6 +29,9 @@ export type AnalysisResult = {
   rating_distribution: Record<string, number>
   mood_analysis: Record<string, number>
   films_by_decade: Record<string, Film[]>
+  data_source?: string
+  is_partial_data?: boolean
+  data_note?: string | null
 }
 
 export default function Home() {
