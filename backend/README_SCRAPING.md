@@ -57,6 +57,21 @@ Set `MAX_FILMS_TO_SCRAPE` environment variable on Render to control scraping lim
 - Default: 20 films per request
 - Set to 0 to disable scraping entirely (database-only mode)
 
+### Cloudflare-Blocked Fallback (No User Upload)
+If Render IPs are blocked by Cloudflare, configure a managed scraper provider.
+
+- `SCRAPER_PROVIDER`: optional, `scrapingbee` or `zenrows`
+- `SCRAPINGBEE_API_KEY`: enables ScrapingBee fallback
+- `SCRAPINGBEE_COUNTRY`: optional country code, default `us`
+- `SCRAPINGBEE_RENDER_JS`: optional, default `false`
+- `ZENROWS_API_KEY`: enables ZenRows fallback
+- `ZENROWS_JS_RENDER`: optional, default `true`
+
+When configured, the backend tries:
+1. `cloudscraper`
+2. `aiohttp`
+3. managed scraper provider
+4. RSS fallback (partial results) if all above are blocked
 
 
 

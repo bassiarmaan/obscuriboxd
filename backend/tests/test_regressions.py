@@ -174,6 +174,30 @@ class ScraperRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(films[0]["letterboxd_watches"], 12_345)
         save_films_mock.assert_not_called()
 
+    async def test_managed_scraper_prefers_explicit_provider(self) -> None:
+        with patch.dict("os.environ", {"SCRAPER_PROVIDER": "scrapingbee"}, clear=False), patch.object(
+            scraper, "fetch_with_scrapingbee", new=AsyncMock(return_value="<html>ok</html>")
+        ) as scrapingbee_mock, patch.object(
+            scraper, "fetch_with_zenrows", new=AsyncMock(return_value="<html>zen</html>")
+        ) as zenrows_mock:
+            html = await scraper.fetch_with_managed_scraper("https://example.com")
+
+        self.assertEqual(html, "<html>ok</html>")
+        scrapingbee_mock.assert_awaited_once()
+        zenrows_mock.assert_not_awaited()
+
+    async def test_managed_scraper_tries_both_when_provider_unspecified(self) -> None:
+        with patch.dict("os.environ", {}, clear=False), patch.object(
+            scraper, "fetch_with_scrapingbee", new=AsyncMock(return_value=None)
+        ) as scrapingbee_mock, patch.object(
+            scraper, "fetch_with_zenrows", new=AsyncMock(return_value="<html>zen</html>")
+        ) as zenrows_mock:
+            html = await scraper.fetch_with_managed_scraper("https://example.com")
+
+        self.assertEqual(html, "<html>zen</html>")
+        scrapingbee_mock.assert_awaited_once()
+        zenrows_mock.assert_awaited_once()
+
 
 if __name__ == "__main__":
     unittest.main()

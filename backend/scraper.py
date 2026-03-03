@@ -743,6 +743,105 @@ def is_cloudflare_challenge(html: str) -> bool:
     return False
 
 
+async def fetch_with_scrapingbee(url: str, headers: dict | None = None) -> str | None:
+    """Try fetching with ScrapingBee. Returns HTML on success, None otherwise."""
+    api_key = os.getenv("SCRAPINGBEE_API_KEY")
+    if not api_key:
+        return None
+
+    params = {
+        "api_key": api_key,
+        "url": url,
+        "premium_proxy": "true",
+        "country_code": os.getenv("SCRAPINGBEE_COUNTRY", "us"),
+        "render_js": os.getenv("SCRAPINGBEE_RENDER_JS", "false"),
+    }
+    timeout = ClientTimeout(total=45, connect=15)
+
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get("https://app.scrapingbee.com/api/v1/", params=params, headers=headers) as response:
+                if response.status != 200:
+                    print(f"   ⚠️ ScrapingBee failed: HTTP {response.status}")
+                    return None
+
+                html = await response.text()
+                if not html:
+                    print("   ⚠️ ScrapingBee returned empty response")
+                    return None
+                if is_cloudflare_challenge(html):
+                    print("   ⚠️ ScrapingBee response still looks like Cloudflare challenge")
+                    return None
+
+                print(f"✅ Successfully fetched {url} via ScrapingBee (length: {len(html)})")
+                return html
+    except Exception as e:
+        print(f"   ⚠️ ScrapingBee error: {e}")
+        return None
+
+
+async def fetch_with_zenrows(url: str, headers: dict | None = None) -> str | None:
+    """Try fetching with ZenRows. Returns HTML on success, None otherwise."""
+    api_key = os.getenv("ZENROWS_API_KEY")
+    if not api_key:
+        return None
+
+    params = {
+        "apikey": api_key,
+        "url": url,
+        "premium_proxy": "true",
+        "js_render": os.getenv("ZENROWS_JS_RENDER", "true"),
+    }
+    timeout = ClientTimeout(total=45, connect=15)
+
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get("https://api.zenrows.com/v1/", params=params, headers=headers) as response:
+                if response.status != 200:
+                    print(f"   ⚠️ ZenRows failed: HTTP {response.status}")
+                    return None
+
+                html = await response.text()
+                if not html:
+                    print("   ⚠️ ZenRows returned empty response")
+                    return None
+                if is_cloudflare_challenge(html):
+                    print("   ⚠️ ZenRows response still looks like Cloudflare challenge")
+                    return None
+
+                print(f"✅ Successfully fetched {url} via ZenRows (length: {len(html)})")
+                return html
+    except Exception as e:
+        print(f"   ⚠️ ZenRows error: {e}")
+        return None
+
+
+async def fetch_with_managed_scraper(url: str, headers: dict | None = None) -> str | None:
+    """
+    Try a managed scraper provider for Cloudflare-blocked requests.
+    Supported providers:
+    - SCRAPINGBEE_API_KEY (+ optional SCRAPER_PROVIDER=scrapingbee)
+    - ZENROWS_API_KEY (+ optional SCRAPER_PROVIDER=zenrows)
+    """
+    provider = os.getenv("SCRAPER_PROVIDER", "").strip().lower()
+
+    if provider and provider not in {"scrapingbee", "zenrows"}:
+        print(f"   ⚠️ Unknown SCRAPER_PROVIDER='{provider}', skipping managed scraper fallback")
+        return None
+
+    if provider in {"", "scrapingbee"}:
+        html = await fetch_with_scrapingbee(url, headers)
+        if html:
+            return html
+
+    if provider in {"", "zenrows"}:
+        html = await fetch_with_zenrows(url, headers)
+        if html:
+            return html
+
+    return None
+
+
 async def fetch_with_cloudflare_bypass(url: str, headers: dict = None) -> str:
     """
     Fetch URL with Cloudflare bypass using cloudscraper.
@@ -799,11 +898,17 @@ async def fetch_with_cloudflare_bypass(url: str, headers: dict = None) -> str:
                 error_text = await response.text()
                 if response.status == 403:
                     print(f"   🛡️ aiohttp also received 403 for {url}")
+                    managed_html = await fetch_with_managed_scraper(url, request_headers)
+                    if managed_html:
+                        return managed_html
                     raise Exception("CLOUDFLARE_BLOCKED: 403 Forbidden")
                 raise Exception(f"HTTP {response.status} error: {response.reason}. Response: {error_text[:200]}")
             html = await response.text()
             if is_cloudflare_challenge(html):
                 print(f"   🛡️ aiohttp returned Cloudflare challenge page")
+                managed_html = await fetch_with_managed_scraper(url, request_headers)
+                if managed_html:
+                    return managed_html
                 raise Exception("CLOUDFLARE_BLOCKED: challenge page")
             print(f"✅ Successfully fetched {url} via aiohttp (length: {len(html)})")
             return html
