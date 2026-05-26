@@ -1,12 +1,12 @@
-@import url('https://fonts.cdnfonts.com/css/proxima-nova-2');
+@import url('https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@0,100..900;1,100..900&display=swap');
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {
-  --font-display: 'Proxima Nova', -apple-system, BlinkMacSystemFont, sans-serif;
-  --font-body: 'Proxima Nova', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-display: 'Montserrat', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-body: 'Montserrat', -apple-system, BlinkMacSystemFont, sans-serif;
   --font-mono: 'SF Mono', Monaco, monospace;
   
   /* Letterboxd-inspired color palette */
