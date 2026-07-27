@@ -168,11 +168,17 @@ async def get_user_films_from_rss(username: str) -> list[dict]:
     return films
 
 
-async def get_user_films(username: str) -> list[dict]:
+async def get_user_film_list(username: str) -> tuple[list[dict], str]:
     """
-    Scrape all films from a Letterboxd user's profile.
-    Returns a list of films with title, year, rating, and letterboxd URL.
-    NO PAGE LIMITS - scrapes all pages to get complete film list.
+    Scrape the raw film list (slug, title, year, user rating) from a user's profile.
+
+    Returns (films, data_source) where data_source is one of:
+      'full_scrape'    - got the complete profile
+      'partial_scrape' - blocked part-way, returning what we have
+      'rss_fallback'   - HTML blocked, fell back to the recent-films RSS feed
+
+    Does NOT touch the database or assign default watch counts - callers decide what to do
+    with the raw list (analyze against the DB, or enrich+save to build the DB).
     """
     films = []
     page = 1
@@ -299,7 +305,26 @@ async def get_user_films(username: str) -> list[dict]:
     # If no films found at all, raise an error
     if not films:
         raise Exception(f"No films found for user '{username}'. Make sure the profile is public.")
-    
+
+    if used_rss_fallback:
+        data_source = "rss_fallback"
+    elif blocked_mid_pagination:
+        data_source = "partial_scrape"
+    else:
+        data_source = "full_scrape"
+
+    return films, data_source
+
+
+async def get_user_films(username: str) -> list[dict]:
+    """
+    Analyze a user's profile against the local watch-count database.
+
+    Scrapes the user's film list live, then fills watch counts + metadata from the DB.
+    Films not in the DB are treated as obscure via a default watch count.
+    """
+    films, data_source = await get_user_film_list(username)
+
     # Check database first for existing films
     slugs = [f.get('slug') for f in films if f.get('slug')]
     print(f"🔍 Looking up {len(slugs)} film slugs in database...")
@@ -337,13 +362,6 @@ async def get_user_films(username: str) -> list[dict]:
 
     # Tag the data source so the API can tell the frontend whether this was a full analysis,
     # a partial one (some pages blocked), or an RSS-only fallback (recent films only).
-    if used_rss_fallback:
-        data_source = "rss_fallback"
-    elif blocked_mid_pagination:
-        data_source = "partial_scrape"
-    else:
-        data_source = "full_scrape"
-
     if data_source != "full_scrape":
         for film in enriched_films:
             film[DATA_SOURCE_MARKER] = data_source

@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from database import init_database, get_stats, save_films, get_films_by_slugs, get_db_connection
 from scraper import (
-    get_user_films,
+    get_user_film_list,
     enrich_with_letterboxd_stats,
     fetch_with_cloudflare_bypass,
     get_popular_film_slugs,
@@ -74,33 +74,43 @@ def check_database():
                     print(f"   - {row['title']} ({row['year']})")
 
 
-async def scrape_user_films(username: str, save_to_db: bool = True):
-    """Scrape all films from a user's profile and optionally save to database."""
-    print(f"\n🎬 Scraping films for user: {username}")
+def filter_new_slugs(slugs: list) -> list:
+    """Return only the slugs that are NOT already in the database (skip existing)."""
+    unique = list(dict.fromkeys(s for s in slugs if s))
+    existing = get_films_by_slugs(unique)
+    new_slugs = [s for s in unique if s not in existing]
+    print(f"   {len(existing)} already in DB (skipped), {len(new_slugs)} new to enrich")
+    return new_slugs
+
+
+async def backfill_user_films(username: str):
+    """
+    Add a user's films to the database, enriching ONLY the ones not already present.
+    Films already in the DB are skipped (not re-scraped).
+    """
+    print(f"\n🎬 Backfilling DB from {username}'s profile...")
     print("=" * 50)
-    
+
     try:
-        films = await get_user_films(username)
-        print(f"\n✅ Found {len(films)} films for {username}")
-        
-        if films and save_to_db:
-            print(f"\n💾 Saving {len(films)} films to database...")
-            save_films(films)
-            print("✅ Films saved!")
-            
-            # Show sample
-            print("\n📋 Sample saved films:")
-            for film in films[:5]:
-                watches = film.get('letterboxd_watches', 'N/A')
-                if isinstance(watches, int):
-                    watches = f"{watches:,}"
-                print(f"   - {film.get('title')} ({film.get('year')}) - {watches} watches")
-        
-        return films
-        
+        films, data_source = await get_user_film_list(username)
     except Exception as e:
         print(f"\n❌ Error: {e}")
-        return []
+        return 0
+
+    slugs = [f.get('slug') for f in films if f.get('slug')]
+    print(f"   {username} has {len(slugs)} films (source: {data_source})")
+
+    new_slugs = filter_new_slugs(slugs)
+    if not new_slugs:
+        print("   ✅ Nothing new to add - all of this user's films are already in the DB.")
+        return 0
+
+    new_films = [
+        {'slug': s, 'letterboxd_url': f"https://letterboxd.com/film/{s}/"}
+        for s in new_slugs
+    ]
+    await enrich_and_save_films(new_films)
+    return len(new_films)
 
 
 async def scrape_popular_films(pages: int = 10):
@@ -109,13 +119,16 @@ async def scrape_popular_films(pages: int = 10):
     print("=" * 50)
 
     slugs = await get_popular_film_slugs(pages)
+    print(f"\n📊 Collected {len(slugs)} popular slugs; checking which are new...")
+
+    new_slugs = filter_new_slugs(slugs)
 
     all_films = [
         {'slug': slug, 'letterboxd_url': f"https://letterboxd.com/film/{slug}/"}
-        for slug in slugs
+        for slug in new_slugs
     ]
 
-    print(f"\n📊 Total unique films collected: {len(all_films)}")
+    print(f"📊 {len(all_films)} new films to enrich.")
     return all_films
 
 
@@ -149,22 +162,19 @@ async def enrich_and_save_films(films: list):
 
 
 async def scrape_multiple_users(usernames: list):
-    """Scrape films from multiple users to build up the database."""
-    all_slugs = set()
-    
+    """Backfill the database from multiple users' profiles (skipping films already in the DB)."""
+    total_added = 0
+
     for username in usernames:
         try:
-            films = await scrape_user_films(username, save_to_db=True)
-            for film in films:
-                if film.get('slug'):
-                    all_slugs.add(film['slug'])
+            total_added += await backfill_user_films(username)
         except Exception as e:
             print(f"⚠️  Error with {username}: {e}")
         
         # Rate limiting between users
         await asyncio.sleep(1)
     
-    print(f"\n📊 Total unique films collected: {len(all_slugs)}")
+    print(f"\n📊 Total new films added across all users: {total_added}")
 
 
 def fix_database_slugs():
@@ -264,7 +274,7 @@ async def main():
         return
     
     if args.username:
-        await scrape_user_films(args.username)
+        await backfill_user_films(args.username)
         check_database()
         return
     
