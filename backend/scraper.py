@@ -6,21 +6,27 @@ Saves films to database for future use.
 
 import asyncio
 import aiohttp
+import random
 from bs4 import BeautifulSoup
 import re
 import os
 from database import save_films, get_films_by_slugs
 from aiohttp import ClientTimeout
 
-# Import cloudscraper for Cloudflare bypass
+# Import curl_cffi for browser-fingerprinted requests (defeats Cloudflare TLS/JA3 fingerprinting).
+# This replaces cloudscraper, which is effectively obsolete against modern Cloudflare (2026).
 try:
-    import cloudscraper
-    CLOUDSCRAPER_AVAILABLE = True
-    print("✅ Cloudscraper is available for Cloudflare bypass")
+    from curl_cffi import requests as cffi_requests
+    CURL_CFFI_AVAILABLE = True
+    print("✅ curl_cffi is available for browser-fingerprinted requests")
 except ImportError:
-    CLOUDSCRAPER_AVAILABLE = False
-    cloudscraper = None
-    print("⚠️  Cloudscraper not available - will use aiohttp (may be blocked by Cloudflare)")
+    CURL_CFFI_AVAILABLE = False
+    cffi_requests = None
+    print("⚠️  curl_cffi not available - will use aiohttp (likely blocked by Cloudflare)")
+
+# Browser profiles to rotate through on retries. curl_cffi sets a matching TLS + HTTP/2
+# fingerprint AND browser headers for each, so we intentionally do NOT override headers.
+IMPERSONATE_PROFILES = ["chrome", "chrome131", "safari", "chrome124"]
 
 # Import TMDb functions for poster fetching
 try:
@@ -173,6 +179,7 @@ async def get_user_films(username: str) -> list[dict]:
     consecutive_empty_pages = 0
     max_empty_pages = 2  # Stop after 2 consecutive empty pages
     used_rss_fallback = False  # Track if we used RSS (can't scrape if Cloudflare is blocking)
+    blocked_mid_pagination = False  # Track if we got blocked after already collecting some films
     
     # Create session with timeout to prevent hanging
     timeout = ClientTimeout(total=30, connect=10)
@@ -181,7 +188,7 @@ async def get_user_films(username: str) -> list[dict]:
             url = f"https://letterboxd.com/{username}/films/page/{page}/"
             
             try:
-                # Try using cloudscraper first to bypass Cloudflare
+                # Fetch via curl_cffi browser impersonation (falls back to RSS below if blocked)
                 print(f"📡 Fetching page {page} for user '{username}'...")
                 html = await fetch_with_cloudflare_bypass(url, get_headers())
                 
@@ -206,7 +213,8 @@ async def get_user_films(username: str) -> list[dict]:
                             f"Cloudflare protection detected. Letterboxd is blocking automated requests. "
                             f"This may be temporary. Please try again later or check if your IP is blocked."
                         )
-                    print(f"⚠️  Cloudflare challenge on page {page}, stopping")
+                    print(f"⚠️  Cloudflare challenge on page {page}, returning {len(films)} films collected so far (partial)")
+                    blocked_mid_pagination = True
                     break
                 
                 # Check if profile is private - look for specific Letterboxd private profile messages
@@ -259,9 +267,13 @@ async def get_user_films(username: str) -> list[dict]:
                 raise Exception(f"Error fetching data: {str(e)}")
             except Exception as e:
                 error_msg = str(e)
-                # Check if Cloudflare is blocking - try RSS fallback
+                # A 404 on page 1 means the user does not exist - surface it clearly.
+                if ("404" in error_msg or "Not Found" in error_msg) and page == 1 and not films:
+                    raise Exception(f"User '{username}' not found on Letterboxd.")
+                # Check if Cloudflare is blocking
                 if "CLOUDFLARE_BLOCKED" in error_msg or "403" in error_msg:
                     if page == 1 and not used_rss_fallback:
+                        # Nothing collected yet - try the (unprotected) RSS feed as a fallback.
                         print(f"🔄 Cloudflare blocking detected, trying RSS feed as fallback...")
                         try:
                             rss_films = await get_user_films_from_rss(username)
@@ -271,7 +283,16 @@ async def get_user_films(username: str) -> list[dict]:
                                 used_rss_fallback = True
                                 break  # Exit the while loop
                         except Exception as rss_error:
-                            print(f"⚠️  RSS fallback also failed: {rss_error}")
+                            rss_msg = str(rss_error)
+                            print(f"⚠️  RSS fallback also failed: {rss_msg}")
+                            if "not found" in rss_msg.lower():
+                                raise Exception(f"User '{username}' not found on Letterboxd.")
+                    elif films:
+                        # We already have films from earlier pages - return them as partial data
+                        # instead of failing the whole request.
+                        print(f"⚠️  Blocked on page {page}, returning {len(films)} films collected so far (partial)")
+                        blocked_mid_pagination = True
+                        break
                 # Re-raise our custom exceptions
                 raise
     
@@ -285,126 +306,47 @@ async def get_user_films(username: str) -> list[dict]:
     db_films = get_films_by_slugs(slugs)
     print(f"   Found {len(db_films)} films in database")
     
-    # Merge database data with user's film list
+    # DB-only enrichment: watch counts and film metadata come entirely from our
+    # precomputed local database (built offline via populate_local.py). We do NOT scrape
+    # individual film stats live on the server - that is what kept getting Cloudflare-blocked.
+    #
+    # Films that are NOT in our DB are, by construction (the DB holds the most-watched films),
+    # almost certainly obscure. We assign them a low default watch count so they are correctly
+    # reflected as obscure in the median-based score instead of being dropped.
+    DEFAULT_OBSCURE_WATCHES = int(os.getenv("DEFAULT_OBSCURE_WATCHES", "2000"))
+
     enriched_films = []
-    films_to_scrape = []
     from_db_count = 0
-    incomplete_count = 0
     missing_count = 0
-    
+
     for film in films:
         slug = film.get('slug')
         if slug and slug in db_films:
-            # Film exists in database - use DB data but keep user rating
+            # Film exists in database - use DB data but keep the user's own rating.
             db_film = db_films[slug]
             film.update({k: v for k, v in db_film.items() if k != 'user_rating'})
-            
-            # Check if film is missing critical information - if so, scrape to complete it
-            needs_scraping = False
-            missing_fields = []
-            
-            # Check for missing critical fields
-            if not film.get('title') or not film.get('title').strip():
-                needs_scraping = True
-                missing_fields.append('title')
-            if film.get('year') is None:
-                needs_scraping = True
-                missing_fields.append('year')
+            from_db_count += 1
+        else:
+            # Not in our precomputed DB -> treat as obscure.
             if film.get('letterboxd_watches') is None:
-                needs_scraping = True
-                missing_fields.append('watches')
-            if not film.get('poster_path') or not film.get('poster_path').strip():
-                needs_scraping = True
-                missing_fields.append('poster')
-            
-            if needs_scraping:
-                # Film exists but missing critical info - scrape to complete it
-                incomplete_count += 1
-                films_to_scrape.append(film)
-            else:
-                # Film is complete - use as-is from database
-                from_db_count += 1
-                enriched_films.append(film)
-        else:
-            # Film not in DB - need to scrape all information
+                film['letterboxd_watches'] = DEFAULT_OBSCURE_WATCHES
             missing_count += 1
-            films_to_scrape.append(film)
-    
-    # Log database usage stats
-    print(f"📊 Database lookup: {from_db_count} from DB, {incomplete_count} incomplete (needs scraping), {missing_count} not in DB")
-    
-    # Scrape only films not in database, but limit to prevent server overload
-    # On production (Render), disable scraping entirely (set MAX_FILMS_TO_SCRAPE=0)
-    # Run populate scripts locally instead
-    MAX_FILMS_TO_SCRAPE_PER_REQUEST = int(os.getenv("MAX_FILMS_TO_SCRAPE", "100"))  # Default to 100 instead of 20
-    
-    if films_to_scrape:
-        # If we used RSS fallback, Cloudflare is blocking so we can't scrape stats either
-        # Just use what we have (films will have default obscurity score)
-        if used_rss_fallback:
-            print(f"📊 Skipping scraping for {len(films_to_scrape)} films (using RSS fallback, Cloudflare blocking)")
-            print(f"   ⚠️  Films without watch data will use default obscurity scores")
-            # Use DB data if available, otherwise use RSS data as-is
-            for film in films_to_scrape:
-                slug = film.get('slug')
-                if slug and slug in db_films:
-                    db_film = db_films[slug]
-                    film.update({k: v for k, v in db_film.items() if k != 'user_rating'})
-                enriched_films.append(film)
-        # If scraping is disabled, use what we have from DB (even if incomplete)
-        elif MAX_FILMS_TO_SCRAPE_PER_REQUEST == 0:
-            print(f"📊 Found {len(films_to_scrape)} films to scrape (scraping disabled on server)")
-            # Use DB data if available, even if incomplete
-            for film in films_to_scrape:
-                slug = film.get('slug')
-                if slug and slug in db_films:
-                    db_film = db_films[slug]
-                    film.update({k: v for k, v in db_film.items() if k != 'user_rating'})
-                enriched_films.append(film)
-        elif len(films_to_scrape) > MAX_FILMS_TO_SCRAPE_PER_REQUEST:
-            # Too many films - prioritize films not in DB, then incomplete films
-            print(f"📊 Found {len(films_to_scrape)} films to scrape (limited to {MAX_FILMS_TO_SCRAPE_PER_REQUEST} per request)...")
-            
-            # Separate: films not in DB vs films missing info
-            films_not_in_db = [f for f in films_to_scrape if f.get('slug') not in db_films]
-            films_missing_info = [f for f in films_to_scrape if f.get('slug') in db_films]
-            
-            # Prioritize films not in DB
-            films_to_scrape_now = (films_not_in_db + films_missing_info)[:MAX_FILMS_TO_SCRAPE_PER_REQUEST]
-            films_to_skip = films_to_scrape[MAX_FILMS_TO_SCRAPE_PER_REQUEST:]
-            
-            # Scrape the limited batch
-            scraped_films = await enrich_with_letterboxd_stats(films_to_scrape_now)
-            enriched_films.extend(scraped_films)
-            save_films(scraped_films)
-            
-            # For the rest, use what we have from DB (even if incomplete)
-            for film in films_to_skip:
-                slug = film.get('slug')
-                if slug and slug in db_films:
-                    db_film = db_films[slug]
-                    film.update({k: v for k, v in db_film.items() if k != 'user_rating'})
-                enriched_films.append(film)
-        else:
-            # Small number of films - safe to scrape all
-            films_not_in_db = [f for f in films_to_scrape if f.get('slug') not in db_films]
-            films_missing_info = [f for f in films_to_scrape if f.get('slug') in db_films]
-            
-            if films_not_in_db:
-                print(f"📊 Scraping {len(films_not_in_db)} new films and {len(films_missing_info)} incomplete films...")
-            else:
-                print(f"📊 Completing information for {len(films_missing_info)} films...")
-            
-            scraped_films = await enrich_with_letterboxd_stats(films_to_scrape)
-            enriched_films.extend(scraped_films)
-            save_films(scraped_films)
-    else:
-        print(f"✅ All {len(films)} films found in database with complete information!")
-        print(f"   💾 100% from database - no scraping needed!")
-    
+        enriched_films.append(film)
+
+    print(f"📊 Database lookup: {from_db_count} from DB, {missing_count} not in DB (treated as obscure, default {DEFAULT_OBSCURE_WATCHES} watches)")
+
+    # Tag the data source so the API can tell the frontend whether this was a full analysis,
+    # a partial one (some pages blocked), or an RSS-only fallback (recent films only).
     if used_rss_fallback:
+        data_source = "rss_fallback"
+    elif blocked_mid_pagination:
+        data_source = "partial_scrape"
+    else:
+        data_source = "full_scrape"
+
+    if data_source != "full_scrape":
         for film in enriched_films:
-            film[DATA_SOURCE_MARKER] = "rss_fallback"
+            film[DATA_SOURCE_MARKER] = data_source
 
     return enriched_films
 
@@ -418,17 +360,11 @@ async def enrich_with_letterboxd_stats(films: list[dict]) -> list[dict]:
     if not films:
         return films
     
-    # Optimized batch sizes for maximum speed
-    # For large-scale scraping, use much larger batches
-    if len(films) > 1000:
-        batch_size = 50  # Increased for bulk scraping
-        delay = 0.05  # Minimal delay
-    elif len(films) > 500:
-        batch_size = 50
-        delay = 0.05
-    else:
-        batch_size = 50
-        delay = 0.05
+    # Gentle concurrency: each film does 2 requests (stats + main page), so batch_size N
+    # means ~2N concurrent curl_cffi requests. Keep this modest to stay under Letterboxd's
+    # rate limits during large offline builds (better a slower job than a blocked one).
+    batch_size = int(os.getenv("ENRICH_BATCH_SIZE", "15"))
+    delay = float(os.getenv("ENRICH_DELAY", "0.3"))
     
     # Create session with optimized timeout and connection limits
     timeout = aiohttp.ClientTimeout(total=15, connect=5)
@@ -475,44 +411,31 @@ async def get_film_stats(session: aiohttp.ClientSession, film: dict, retries: in
             headers = get_headers()
             stats = {}
             
-            # Use cloudscraper to bypass Cloudflare if available
-            if CLOUDSCRAPER_AVAILABLE:
-                loop = asyncio.get_event_loop()
-                scraper = cloudscraper.create_scraper()
-                
-                def fetch_stats():
+            # Use curl_cffi browser impersonation to defeat Cloudflare fingerprinting.
+            if CURL_CFFI_AVAILABLE:
+                profile = IMPERSONATE_PROFILES[attempt % len(IMPERSONATE_PROFILES)]
+
+                async def fetch_cffi(u):
                     try:
-                        resp = scraper.get(stats_url, headers=headers, timeout=15)
+                        async with cffi_requests.AsyncSession() as s:
+                            resp = await s.get(u, impersonate=profile, timeout=15, allow_redirects=True)
                         if resp.status_code == 200:
-                            # Force UTF-8 encoding before accessing .text (cloudscraper encoding detection can fail)
-                            resp.encoding = 'utf-8'
                             return resp.text
                         return ""
-                    except:
+                    except Exception:
                         return ""
-                
-                def fetch_main():
-                    try:
-                        resp = scraper.get(main_url, headers=headers, timeout=15)
-                        if resp.status_code == 200:
-                            # Force UTF-8 encoding before accessing .text (cloudscraper encoding detection can fail)
-                            resp.encoding = 'utf-8'
-                            return resp.text
-                        return ""
-                    except:
-                        return ""
-                
+
                 stats_html, main_html = await asyncio.gather(
-                    loop.run_in_executor(None, fetch_stats),
-                    loop.run_in_executor(None, fetch_main),
-                    return_exceptions=True
+                    fetch_cffi(stats_url),
+                    fetch_cffi(main_url),
+                    return_exceptions=True,
                 )
-                
+
                 # Parse stats page
                 if not isinstance(stats_html, Exception) and stats_html:
                     if not is_cloudflare_challenge(stats_html):
                         stats = parse_stats_html(stats_html)
-                
+
                 # Parse main page
                 if not isinstance(main_html, Exception) and main_html:
                     if not is_cloudflare_challenge(main_html):
@@ -842,58 +765,105 @@ async def fetch_with_managed_scraper(url: str, headers: dict | None = None) -> s
     return None
 
 
-async def fetch_with_cloudflare_bypass(url: str, headers: dict = None) -> str:
+async def _fetch_curl_cffi(url: str, retries: int = 3) -> str:
     """
-    Fetch URL with Cloudflare bypass using cloudscraper.
-    Falls back to aiohttp if cloudscraper is not available.
+    Fetch a URL using curl_cffi with browser impersonation.
+
+    Rotates through browser profiles and backs off on Cloudflare 403/challenge.
+    Returns HTML text on success.
+    Raises Exception('404 Not Found...') for missing users/pages (do not retry).
+    Raises Exception('CLOUDFLARE_BLOCKED...') after exhausting retries.
     """
-    request_headers = headers or get_headers()
-    
-    print(f"🌐 Attempting to fetch: {url}")
-    print(f"   Cloudscraper available: {CLOUDSCRAPER_AVAILABLE}")
-    
-    if CLOUDSCRAPER_AVAILABLE:
-        # Use cloudscraper in a thread pool to avoid blocking
-        loop = asyncio.get_event_loop()
-        # Create scraper with minimal configuration - let cloudscraper auto-detect
-        scraper = cloudscraper.create_scraper()
+    last_error = "CLOUDFLARE_BLOCKED: 403 Forbidden"
+
+    for attempt in range(retries):
+        profile = IMPERSONATE_PROFILES[attempt % len(IMPERSONATE_PROFILES)]
         try:
-            def fetch():
-                resp = scraper.get(url, timeout=30, allow_redirects=True)
-                print(f"   Response status: {resp.status_code}")
-                # Verify we got a successful response
-                if resp.status_code == 404:
-                    raise Exception(f"404 Not Found: User or page does not exist")
-                elif resp.status_code != 200:
-                    raise Exception(f"HTTP {resp.status_code} error: {resp.reason}")
-                # Force UTF-8 encoding before accessing .text (cloudscraper encoding detection can fail)
-                resp.encoding = 'utf-8'
-                html_text = resp.text
-                if not html_text:
-                    raise Exception("Empty response received")
-                # Check if we got a Cloudflare challenge even with 200 status
-                if is_cloudflare_challenge(html_text):
-                    print(f"   ⚠️ Cloudscraper returned Cloudflare challenge page!")
-                    print(f"   HTML preview: {html_text[:200]}")
-                return html_text
-            
-            html = await loop.run_in_executor(None, fetch)
-            print(f"✅ Successfully fetched {url} via cloudscraper (length: {len(html)})")
+            # Let the impersonation profile own the headers so the TLS fingerprint and
+            # the User-Agent/Sec-* headers stay consistent (mismatches are an instant block).
+            async with cffi_requests.AsyncSession() as session:
+                resp = await session.get(
+                    url,
+                    impersonate=profile,
+                    timeout=30,
+                    allow_redirects=True,
+                )
+            status = resp.status_code
+
+            if status == 404:
+                raise Exception("404 Not Found: User or page does not exist")
+
+            if status == 403:
+                last_error = "CLOUDFLARE_BLOCKED: 403 Forbidden"
+                print(f"   🛡️ curl_cffi got 403 for {url} (profile={profile}, attempt {attempt + 1}/{retries})")
+                await asyncio.sleep(0.5 * (attempt + 1) + random.random() * 0.5)
+                continue
+
+            if status != 200:
+                last_error = f"HTTP {status} error"
+                await asyncio.sleep(0.3 * (attempt + 1))
+                continue
+
+            html = resp.text
+            if not html:
+                last_error = "Empty response received"
+                await asyncio.sleep(0.3 * (attempt + 1))
+                continue
+
+            if is_cloudflare_challenge(html):
+                last_error = "CLOUDFLARE_BLOCKED: challenge page"
+                print(f"   🛡️ curl_cffi got a Cloudflare challenge for {url} (profile={profile})")
+                await asyncio.sleep(0.5 * (attempt + 1) + random.random() * 0.5)
+                continue
+
             return html
         except Exception as e:
             error_msg = str(e)
-            print(f"⚠️  Cloudscraper failed for {url}: {error_msg}")
-            # If it's a 404, don't fall back - raise it
+            # 404 is definitive - do not retry or fall back.
             if "404" in error_msg or "Not Found" in error_msg:
                 raise
-            if "403" in error_msg or "Forbidden" in error_msg:
-                print(f"   🛡️ Cloudflare blocking detected via cloudscraper (403)")
+            last_error = error_msg
+            print(f"   ⚠️ curl_cffi error for {url} (profile={profile}): {error_msg}")
+            await asyncio.sleep(0.3 * (attempt + 1))
+
+    raise Exception(last_error)
+
+
+async def fetch_with_cloudflare_bypass(url: str, headers: dict = None) -> str:
+    """
+    Fetch a URL, defeating Cloudflare fingerprinting via curl_cffi browser impersonation.
+
+    Order: curl_cffi (primary) -> managed scraper API (if configured) -> plain aiohttp (last resort).
+    """
+    request_headers = headers or get_headers()
+
+    print(f"🌐 Attempting to fetch: {url}")
+
+    # 1. curl_cffi browser impersonation (primary)
+    if CURL_CFFI_AVAILABLE:
+        try:
+            html = await _fetch_curl_cffi(url)
+            print(f"✅ Successfully fetched {url} via curl_cffi (length: {len(html)})")
+            return html
+        except Exception as e:
+            error_msg = str(e)
+            # 404 is definitive - propagate so callers can surface "user not found".
+            if "404" in error_msg or "Not Found" in error_msg:
+                raise
+            print(f"⚠️  curl_cffi failed for {url}: {error_msg}")
+
+            # 2. Managed scraper API fallback (env-gated, off by default)
+            managed_html = await fetch_with_managed_scraper(url, request_headers)
+            if managed_html:
+                return managed_html
             print(f"   Falling back to aiohttp...")
-    
-    # Fallback to aiohttp
+
+    # 3. Plain aiohttp (last resort - usually blocked on datacenter IPs, but free to try)
     timeout = ClientTimeout(total=30, connect=10)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.get(url, headers=request_headers) as response:
+            if response.status == 404:
+                raise Exception("404 Not Found: User or page does not exist")
             if response.status != 200:
                 error_text = await response.text()
                 if response.status == 403:
@@ -1098,6 +1068,72 @@ def parse_films_page(html: str) -> list[dict]:
                             })
     
     return films
+
+
+def parse_popular_slugs(html: str) -> list[str]:
+    """
+    Parse film slugs from the popular-films CSI list endpoint
+    (/csi/films/films-browser-list/popular/page/N/). Returns slugs in popularity order.
+    """
+    soup = BeautifulSoup(html, 'lxml')
+    slugs = []
+    seen = set()
+
+    # Poster components expose the slug via data attributes or a /film/<slug>/ target link.
+    for el in soup.select('[data-film-slug], [data-item-slug], [data-target-link]'):
+        slug = el.get('data-film-slug') or el.get('data-item-slug') or ''
+        if not slug:
+            target = el.get('data-target-link', '')
+            m = re.search(r'/film/([^/]+)/', target)
+            if m:
+                slug = m.group(1)
+        if slug and slug not in seen:
+            seen.add(slug)
+            slugs.append(slug)
+
+    # Fallback: pull slugs from any /film/<slug>/ links in the markup.
+    if not slugs:
+        for slug in re.findall(r'/film/([a-z0-9:.-]+)/', html):
+            if slug not in seen:
+                seen.add(slug)
+                slugs.append(slug)
+
+    return slugs
+
+
+async def get_popular_film_slugs(pages: int, delay: float = 0.3) -> list[str]:
+    """
+    Fetch slugs of the most-watched films from Letterboxd's popular list.
+
+    Uses the CSI list endpoint (72 films/page) which is what /films/popular/ lazy-loads.
+    Intended to be run offline (locally) to build the watch-count database.
+    """
+    all_slugs = []
+    seen = set()
+
+    for page in range(1, pages + 1):
+        url = f"https://letterboxd.com/csi/films/films-browser-list/popular/page/{page}/?esiAllowFilters=true"
+        try:
+            print(f"📡 Fetching popular page {page}/{pages}...")
+            html = await fetch_with_cloudflare_bypass(url)
+        except Exception as e:
+            print(f"   ⚠️ Failed to fetch popular page {page}: {e}")
+            break
+
+        page_slugs = parse_popular_slugs(html)
+        if not page_slugs:
+            print(f"   ⚠️ No slugs on page {page}, stopping (reached the end or blocked).")
+            break
+
+        new = [s for s in page_slugs if s not in seen]
+        for s in new:
+            seen.add(s)
+        all_slugs.extend(new)
+        print(f"   Found {len(page_slugs)} films ({len(all_slugs)} unique total)")
+
+        await asyncio.sleep(delay)
+
+    return all_slugs
 
 
 # Keep old function names for compatibility

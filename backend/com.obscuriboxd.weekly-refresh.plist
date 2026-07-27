@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Weekly Obscuriboxd database refresh (macOS launchd agent).
+
+  Install:
+    cp backend/com.obscuriboxd.weekly-refresh.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.obscuriboxd.weekly-refresh.plist
+
+  Uninstall:
+    launchctl unload ~/Library/LaunchAgents/com.obscuriboxd.weekly-refresh.plist
+
+  Runs Sundays at 03:00 (and catches up if the Mac was asleep). Must run on your
+  home/residential network - Letterboxd blocks datacenter/CI IPs.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.obscuriboxd.weekly-refresh</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/armaanbassi/obscuriboxd/backend/refresh_and_push.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/armaanbassi/obscuriboxd/backend</string>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Weekday</key>
+        <integer>0</integer>
+        <key>Hour</key>
+        <integer>3</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/armaanbassi/obscuriboxd/backend/logs/launchd.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/armaanbassi/obscuriboxd/backend/logs/launchd.err.log</string>
+</dict>
+</plist>

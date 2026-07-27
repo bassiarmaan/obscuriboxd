@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Local scraping script to populate the database with film data.
-Run this locally where cloudscraper can bypass Cloudflare more effectively.
+Run this locally (residential IP) where curl_cffi can reach Letterboxd; datacenter/CI IPs are blocked.
 
 Usage:
     python populate_local.py armbot              # Scrape a single user's films
@@ -18,13 +18,16 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from database import init_database, get_stats, save_films, get_films_by_slugs, get_db_connection
-from scraper import get_user_films, enrich_with_letterboxd_stats, get_headers, is_cloudflare_challenge
+from scraper import (
+    get_user_films,
+    enrich_with_letterboxd_stats,
+    fetch_with_cloudflare_bypass,
+    get_popular_film_slugs,
+    parse_popular_slugs,
+)
 
 # For direct scraping
-import cloudscraper
 import re
-from bs4 import BeautifulSoup
-import time
 
 
 def check_database():
@@ -100,74 +103,19 @@ async def scrape_user_films(username: str, save_to_db: bool = True):
         return []
 
 
-def scrape_popular_films_sync(pages: int = 10):
-    """Scrape popular films from Letterboxd's popular page."""
-    print(f"\n🌟 Scraping popular films ({pages} pages)...")
+async def scrape_popular_films(pages: int = 10):
+    """Scrape popular film slugs from Letterboxd via the CSI list endpoint (curl_cffi)."""
+    print(f"\n🌟 Scraping popular films ({pages} pages, ~{pages * 72} films)...")
     print("=" * 50)
-    
-    scraper = cloudscraper.create_scraper(
-        browser={
-            'browser': 'chrome',
-            'platform': 'darwin',
-            'desktop': True,
-        }
-    )
-    
-    all_films = []
-    
-    for page in range(1, pages + 1):
-        url = f"https://letterboxd.com/films/popular/page/{page}/"
-        print(f"📡 Fetching page {page}...")
-        
-        try:
-            response = scraper.get(url, headers=get_headers(), timeout=30)
-            
-            if response.status_code == 403:
-                print(f"   ⚠️  403 Forbidden - Cloudflare blocking")
-                break
-            
-            if response.status_code != 200:
-                print(f"   ⚠️  HTTP {response.status_code}")
-                continue
-            
-            html = response.text
-            
-            if is_cloudflare_challenge(html):
-                print(f"   ⚠️  Cloudflare challenge detected")
-                break
-            
-            # Parse films from the page
-            soup = BeautifulSoup(html, 'lxml')
-            film_elements = soup.select('li.poster-container div.film-poster')
-            
-            if not film_elements:
-                # Try alternative selector
-                film_elements = soup.select('div[data-film-slug]')
-            
-            page_films = []
-            for elem in film_elements:
-                slug = elem.get('data-film-slug') or elem.get('data-target-link', '').replace('/film/', '').rstrip('/')
-                if slug:
-                    film = {
-                        'slug': slug,
-                        'letterboxd_url': f"https://letterboxd.com/film/{slug}/"
-                    }
-                    page_films.append(film)
-            
-            if page_films:
-                print(f"   Found {len(page_films)} films")
-                all_films.extend(page_films)
-            else:
-                print(f"   No films found on page {page}")
-            
-            # Rate limiting
-            time.sleep(0.5)
-            
-        except Exception as e:
-            print(f"   ❌ Error: {e}")
-            continue
-    
-    print(f"\n📊 Total films collected: {len(all_films)}")
+
+    slugs = await get_popular_film_slugs(pages)
+
+    all_films = [
+        {'slug': slug, 'letterboxd_url': f"https://letterboxd.com/film/{slug}/"}
+        for slug in slugs
+    ]
+
+    print(f"\n📊 Total unique films collected: {len(all_films)}")
     return all_films
 
 
@@ -283,7 +231,7 @@ async def main():
     parser = argparse.ArgumentParser(description='Populate the Obscuriboxd database locally')
     parser.add_argument('username', nargs='?', help='Letterboxd username to scrape')
     parser.add_argument('--popular', action='store_true', help='Scrape popular films')
-    parser.add_argument('--popular-pages', type=int, default=10, help='Number of popular pages to scrape')
+    parser.add_argument('--popular-pages', type=int, default=200, help='Number of popular pages to scrape (72 films each; 200 ~= top 14k films)')
     parser.add_argument('--check', action='store_true', help='Check database status')
     parser.add_argument('--fix-slugs', action='store_true', help='Try to fix missing slugs')
     parser.add_argument('--users', nargs='+', help='Multiple usernames to scrape')
@@ -304,7 +252,7 @@ async def main():
         return
     
     if args.popular:
-        films = scrape_popular_films_sync(args.popular_pages)
+        films = await scrape_popular_films(args.popular_pages)
         if films:
             await enrich_and_save_films(films)
         check_database()

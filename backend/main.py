@@ -102,6 +102,42 @@ async def database_stats():
     return get_stats()
 
 
+@app.get("/debug/fetch")
+async def debug_fetch(url: str, token: str = ""):
+    """
+    Sanity-check the live fetch layer (e.g. from Render's datacenter IP).
+    Gated behind the DEBUG_TOKEN env var. Only letterboxd.com URLs are allowed.
+
+    Example: /debug/fetch?url=https://letterboxd.com/films/popular/page/1/&token=...
+    """
+    import time
+    from scraper import fetch_with_cloudflare_bypass
+
+    expected = os.getenv("DEBUG_TOKEN")
+    if not expected or token != expected:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    if not url.startswith("https://letterboxd.com/"):
+        raise HTTPException(status_code=400, detail="Only letterboxd.com URLs are allowed")
+
+    start = time.time()
+    try:
+        html = await fetch_with_cloudflare_bypass(url)
+        return {
+            "ok": True,
+            "url": url,
+            "length": len(html),
+            "elapsed_s": round(time.time() - start, 2),
+            "preview": html[:200],
+        }
+    except Exception as e:
+        return {
+            "ok": False,
+            "url": url,
+            "error": str(e),
+            "elapsed_s": round(time.time() - start, 2),
+        }
+
+
 @app.get("/films")
 async def list_films(limit: int = 50, offset: int = 0):
     """List films in the database."""
@@ -188,14 +224,21 @@ async def analyze_user(request: AnalyzeRequest):
             print(f"Calculator traceback:\n{traceback.format_exc()}")
             raise
         
-        used_rss_fallback = any(f.get(DATA_SOURCE_MARKER) == "rss_fallback" for f in films)
-        stats["data_source"] = "rss_fallback" if used_rss_fallback else "full_scrape"
-        stats["is_partial_data"] = used_rss_fallback
-        stats["data_note"] = (
-            "Letterboxd blocked full profile scraping from this server, so only recent RSS films were analyzed."
-            if used_rss_fallback
-            else None
-        )
+        # Determine the data source from markers set by the scraper.
+        data_source = "full_scrape"
+        for f in films:
+            marker = f.get(DATA_SOURCE_MARKER)
+            if marker:
+                data_source = marker
+                break
+
+        data_notes = {
+            "rss_fallback": "Letterboxd blocked full profile scraping from this server, so only recent RSS films were analyzed.",
+            "partial_scrape": "Letterboxd blocked part-way through your profile, so only some of your films were analyzed.",
+        }
+        stats["data_source"] = data_source
+        stats["is_partial_data"] = data_source != "full_scrape"
+        stats["data_note"] = data_notes.get(data_source)
 
         print(f"📤 Returning stats: obscurity_score={stats.get('obscurity_score')}, total_films={stats.get('total_films')}")
         return stats
@@ -210,8 +253,16 @@ async def analyze_user(request: AnalyzeRequest):
         print(f"Error analyzing user {username}: {error_msg}")
         print(f"Traceback:\n{error_traceback}")
         
-        if "not found" in error_msg.lower():
-            raise HTTPException(status_code=404, detail=error_msg)
+        error_lower = error_msg.lower()
+        if "not found" in error_lower:
+            raise HTTPException(status_code=404, detail=f"User '{username}' not found. Check the username and that the profile is public.")
+        if "private" in error_lower:
+            raise HTTPException(status_code=403, detail=f"User '{username}' has a private profile. Make it public to analyze it.")
+        if "cloudflare" in error_lower or "blocked" in error_lower or "403" in error_msg:
+            raise HTTPException(
+                status_code=503,
+                detail="Letterboxd is currently blocking requests from our server. Please try again in a little while."
+            )
         # For other errors, return generic message
         raise HTTPException(
             status_code=500, 

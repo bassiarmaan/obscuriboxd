@@ -143,6 +143,8 @@ def init_database():
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_title_year ON films(title, year)")
         if 'letterboxd_watches' in columns:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_letterboxd_watches ON films(letterboxd_watches)")
+        if 'year' in columns:
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_year ON films(year)")
         
         conn.commit()
 
@@ -401,6 +403,23 @@ def save_films(films: List[Dict]) -> None:
     """Save multiple films to the database."""
     for film in films:
         save_film(film)
+
+
+def get_recent_film_slugs(min_year: int) -> List[str]:
+    """
+    Return slugs of films released in min_year or later.
+
+    Used by the weekly refresh to re-fetch watch counts for recent releases,
+    whose numbers change fastest.
+    """
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT letterboxd_slug FROM films WHERE year IS NOT NULL AND year >= ? "
+            "AND letterboxd_slug IS NOT NULL AND letterboxd_slug != ''",
+            (min_year,),
+        )
+        return [row['letterboxd_slug'] for row in cursor.fetchall()]
 
 
 def get_stats() -> Dict:
