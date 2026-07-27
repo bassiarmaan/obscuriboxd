@@ -26,7 +26,22 @@ except ImportError:
 
 # Browser profiles to rotate through on retries. curl_cffi sets a matching TLS + HTTP/2
 # fingerprint AND browser headers for each, so we intentionally do NOT override headers.
-IMPERSONATE_PROFILES = ["chrome", "chrome131", "safari", "chrome124"]
+# Prefer current Chrome/Safari builds — stale fingerprints get challenged more often.
+IMPERSONATE_PROFILES = [
+    "chrome146",
+    "chrome142",
+    "chrome136",
+    "chrome131",
+    "safari184",
+    "safari180",
+]
+
+# Resilience tunables (datacenter IPs especially need slower pacing + cool-downs).
+PAGE_DELAY_SECONDS = float(os.getenv("SCRAPE_PAGE_DELAY", "0.65"))
+PAGE_DELAY_JITTER = float(os.getenv("SCRAPE_PAGE_JITTER", "0.45"))
+FETCH_RETRIES = int(os.getenv("SCRAPE_FETCH_RETRIES", "5"))
+PAGE_RECOVERY_ATTEMPTS = int(os.getenv("SCRAPE_PAGE_RECOVERY", "3"))
+BLOCK_COOLDOWN_BASE = float(os.getenv("SCRAPE_BLOCK_COOLDOWN", "4.0"))
 
 # Import TMDb functions for poster fetching
 try:
@@ -168,6 +183,33 @@ async def get_user_films_from_rss(username: str) -> list[dict]:
     return films
 
 
+def _is_cloudflare_block_error(error_msg: str) -> bool:
+    """True when an exception message indicates Cloudflare/403 blocking."""
+    lower = error_msg.lower()
+    return (
+        "CLOUDFLARE_BLOCKED" in error_msg
+        or "403" in error_msg
+        or "challenge page" in lower
+        or "cloudflare" in lower
+    )
+
+
+async def _try_rss_fallback(username: str) -> list[dict] | None:
+    """Attempt RSS fallback; return films or None. Re-raises clear not-found errors."""
+    print("🔄 Trying RSS feed as fallback...")
+    try:
+        rss_films = await get_user_films_from_rss(username)
+        if rss_films:
+            print(f"✅ RSS fallback successful! Found {len(rss_films)} films")
+            return rss_films
+    except Exception as rss_error:
+        rss_msg = str(rss_error)
+        print(f"⚠️  RSS fallback failed: {rss_msg}")
+        if "not found" in rss_msg.lower():
+            raise Exception(f"User '{username}' not found on Letterboxd.")
+    return None
+
+
 async def get_user_film_list(username: str) -> tuple[list[dict], str]:
     """
     Scrape the raw film list (slug, title, year, user rating) from a user's profile.
@@ -184,125 +226,117 @@ async def get_user_film_list(username: str) -> tuple[list[dict], str]:
     page = 1
     consecutive_empty_pages = 0
     max_empty_pages = 2  # Stop after 2 consecutive empty pages
-    used_rss_fallback = False  # Track if we used RSS (can't scrape if Cloudflare is blocking)
-    blocked_mid_pagination = False  # Track if we got blocked after already collecting some films
-    
-    # Create session with timeout to prevent hanging
-    timeout = ClientTimeout(total=30, connect=10)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
+    used_rss_fallback = False
+    blocked_mid_pagination = False
+
+    # One shared curl_cffi session for the whole pagination run so Cloudflare cookies
+    # and the TLS fingerprint stay consistent across pages.
+    async with LetterboxdClient(warm=True) as client:
         while True:
             url = f"https://letterboxd.com/{username}/films/page/{page}/"
-            
-            try:
-                # Fetch via curl_cffi browser impersonation (falls back to RSS below if blocked)
-                print(f"📡 Fetching page {page} for user '{username}'...")
-                html = await fetch_with_cloudflare_bypass(url, get_headers())
-                
-                # Check if we got a Cloudflare challenge
-                if is_cloudflare_challenge(html):
-                    print(f"🛡️  Cloudflare challenge detected! HTML preview: {html[:300]}")
-                    if page == 1:
-                        # Try RSS feed as fallback
-                        print(f"🔄 Trying RSS feed as fallback...")
-                        try:
-                            rss_films = await get_user_films_from_rss(username)
-                            if rss_films:
-                                print(f"✅ RSS fallback successful! Found {len(rss_films)} films")
-                                films = rss_films
-                                used_rss_fallback = True  # Mark that we used RSS
-                                break  # Exit the while loop and continue with these films
-                        except Exception as rss_error:
-                            print(f"⚠️  RSS fallback failed: {rss_error}")
-                        
-                        # If RSS also failed, raise the original error
-                        raise Exception(
-                            f"Cloudflare protection detected. Letterboxd is blocking automated requests. "
-                            f"This may be temporary. Please try again later or check if your IP is blocked."
+            print(f"📡 Fetching page {page} for user '{username}'...")
+
+            html = None
+            last_error: Exception | None = None
+
+            # Cool down + rotate profile before giving up on a blocked page.
+            for recovery in range(PAGE_RECOVERY_ATTEMPTS):
+                try:
+                    # Fewer per-attempt retries: page recovery owns the long cool-downs.
+                    html = await client.fetch(url, retries=3)
+                    if is_cloudflare_challenge(html):
+                        raise Exception("CLOUDFLARE_BLOCKED: challenge page")
+                    break
+                except Exception as e:
+                    last_error = e
+                    error_msg = str(e)
+                    html = None
+
+                    if ("404" in error_msg or "Not Found" in error_msg) and page == 1 and not films:
+                        raise Exception(f"User '{username}' not found on Letterboxd.")
+
+                    if _is_cloudflare_block_error(error_msg) and recovery < PAGE_RECOVERY_ATTEMPTS - 1:
+                        cooldown = BLOCK_COOLDOWN_BASE * (2 ** recovery) + random.random() * 2.0
+                        print(
+                            f"⏳ Blocked on page {page} "
+                            f"(attempt {recovery + 1}/{PAGE_RECOVERY_ATTEMPTS}); "
+                            f"cooling down {cooldown:.1f}s then retrying..."
                         )
-                    print(f"⚠️  Cloudflare challenge on page {page}, returning {len(films)} films collected so far (partial)")
-                    blocked_mid_pagination = True
+                        client.rotate_profile()
+                        await client.rewarm()
+                        await asyncio.sleep(cooldown)
+                        continue
+
                     break
-                
-                # Check if profile is private - look for specific Letterboxd private profile messages
-                # Don't match false positives like "private-note-modal.css" in stylesheets
-                private_indicators = [
-                    "this person's profile is private",
-                    "this profile is private",
-                    "has a private profile",
-                ]
-                html_lower = html.lower()
-                is_private = any(indicator in html_lower for indicator in private_indicators)
-                if is_private:
-                    if page == 1:
-                        raise Exception(f"User '{username}' profile is private. Make sure the profile is public.")
-                    break
-                
-                # Verify we got valid HTML
-                if not html or len(html) < 100:
-                    if page == 1:
-                        raise Exception(f"Received empty or invalid response from Letterboxd for user '{username}'")
-                    break
-                
-                print(f"📊 Parsing films from page {page} (HTML length: {len(html)})...")
-                page_films = parse_films_page(html)
-                print(f"   Found {len(page_films)} films on page {page}")
-                
-                if not page_films:
-                    consecutive_empty_pages += 1
-                    if consecutive_empty_pages >= max_empty_pages:
-                        if page == 1:
-                            # First page with no films - could be empty profile or parsing issue
-                            print(f"⚠️  No films found on first page for user '{username}'")
-                            print(f"   HTML length: {len(html)}")
-                            print(f"   Contains 'film': {'film' in html.lower()}")
-                            print(f"   Contains 'letterboxd': {'letterboxd' in html.lower()}")
-                            # Save a sample of HTML for debugging (first 500 chars)
-                            print(f"   HTML preview: {html[:500]}")
-                        break
-                    page += 1
-                    continue
-                
-                consecutive_empty_pages = 0  # Reset counter
-                films.extend(page_films)
-                page += 1
-                
-                # Rate limiting - be nice to Letterboxd
-                await asyncio.sleep(0.1)  # Reduced delay
-                    
-            except aiohttp.ClientError as e:
-                raise Exception(f"Error fetching data: {str(e)}")
-            except Exception as e:
-                error_msg = str(e)
-                # A 404 on page 1 means the user does not exist - surface it clearly.
-                if ("404" in error_msg or "Not Found" in error_msg) and page == 1 and not films:
-                    raise Exception(f"User '{username}' not found on Letterboxd.")
-                # Check if Cloudflare is blocking
-                if "CLOUDFLARE_BLOCKED" in error_msg or "403" in error_msg:
-                    if page == 1 and not used_rss_fallback:
-                        # Nothing collected yet - try the (unprotected) RSS feed as a fallback.
-                        print(f"🔄 Cloudflare blocking detected, trying RSS feed as fallback...")
-                        try:
-                            rss_films = await get_user_films_from_rss(username)
-                            if rss_films:
-                                print(f"✅ RSS fallback successful! Found {len(rss_films)} films")
-                                films = rss_films
-                                used_rss_fallback = True
-                                break  # Exit the while loop
-                        except Exception as rss_error:
-                            rss_msg = str(rss_error)
-                            print(f"⚠️  RSS fallback also failed: {rss_msg}")
-                            if "not found" in rss_msg.lower():
-                                raise Exception(f"User '{username}' not found on Letterboxd.")
-                    elif films:
-                        # We already have films from earlier pages - return them as partial data
-                        # instead of failing the whole request.
-                        print(f"⚠️  Blocked on page {page}, returning {len(films)} films collected so far (partial)")
+
+            if html is None:
+                error_msg = str(last_error) if last_error else "unknown error"
+                if _is_cloudflare_block_error(error_msg):
+                    if page == 1 and not films:
+                        rss_films = await _try_rss_fallback(username)
+                        if rss_films:
+                            films = rss_films
+                            used_rss_fallback = True
+                            break
+                        raise Exception(
+                            "Cloudflare protection detected. Letterboxd is blocking automated requests. "
+                            "This may be temporary. Please try again later or check if your IP is blocked."
+                        )
+                    if films:
+                        print(
+                            f"⚠️  Blocked on page {page} after retries, "
+                            f"returning {len(films)} films collected so far (partial)"
+                        )
                         blocked_mid_pagination = True
                         break
-                # Re-raise our custom exceptions
-                raise
-    
-    # If no films found at all, raise an error
+                if last_error:
+                    raise last_error
+                raise Exception(f"Failed to fetch page {page} for user '{username}'")
+
+            # Check if profile is private - look for specific Letterboxd private profile messages
+            # Don't match false positives like "private-note-modal.css" in stylesheets
+            private_indicators = [
+                "this person's profile is private",
+                "this profile is private",
+                "has a private profile",
+            ]
+            html_lower = html.lower()
+            is_private = any(indicator in html_lower for indicator in private_indicators)
+            if is_private:
+                if page == 1:
+                    raise Exception(f"User '{username}' profile is private. Make sure the profile is public.")
+                break
+
+            if not html or len(html) < 100:
+                if page == 1:
+                    raise Exception(f"Received empty or invalid response from Letterboxd for user '{username}'")
+                break
+
+            print(f"📊 Parsing films from page {page} (HTML length: {len(html)})...")
+            page_films = parse_films_page(html)
+            print(f"   Found {len(page_films)} films on page {page}")
+
+            if not page_films:
+                consecutive_empty_pages += 1
+                if consecutive_empty_pages >= max_empty_pages:
+                    if page == 1:
+                        print(f"⚠️  No films found on first page for user '{username}'")
+                        print(f"   HTML length: {len(html)}")
+                        print(f"   Contains 'film': {'film' in html.lower()}")
+                        print(f"   Contains 'letterboxd': {'letterboxd' in html.lower()}")
+                        print(f"   HTML preview: {html[:500]}")
+                    break
+                page += 1
+                await asyncio.sleep(PAGE_DELAY_SECONDS + random.random() * PAGE_DELAY_JITTER)
+                continue
+
+            consecutive_empty_pages = 0
+            films.extend(page_films)
+            page += 1
+
+            # Pace pagination — hammering pages is what triggers mid-scrape blocks.
+            await asyncio.sleep(PAGE_DELAY_SECONDS + random.random() * PAGE_DELAY_JITTER)
+
     if not films:
         raise Exception(f"No films found for user '{username}'. Make sure the profile is public.")
 
@@ -783,68 +817,178 @@ async def fetch_with_managed_scraper(url: str, headers: dict | None = None) -> s
     return None
 
 
-async def _fetch_curl_cffi(url: str, retries: int = 3) -> str:
+class LetterboxdClient:
     """
-    Fetch a URL using curl_cffi with browser impersonation.
+    Shared curl_cffi session for one scrape run.
 
-    Rotates through browser profiles and backs off on Cloudflare 403/challenge.
-    Returns HTML text on success.
-    Raises Exception('404 Not Found...') for missing users/pages (do not retry).
-    Raises Exception('CLOUDFLARE_BLOCKED...') after exhausting retries.
+    Reuses cookies + a sticky browser impersonation profile across pages.
+    Creating a fresh TLS session per page is a common trigger for mid-pagination blocks.
     """
-    last_error = "CLOUDFLARE_BLOCKED: 403 Forbidden"
 
-    for attempt in range(retries):
-        profile = IMPERSONATE_PROFILES[attempt % len(IMPERSONATE_PROFILES)]
+    def __init__(self, warm: bool = True):
+        self.profile = random.choice(IMPERSONATE_PROFILES)
+        self.warm = warm
+        self._session = None
+
+    async def __aenter__(self):
+        if CURL_CFFI_AVAILABLE:
+            self._session = cffi_requests.AsyncSession()
+            await self._session.__aenter__()
+            if self.warm:
+                await self.rewarm()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        if self._session is not None:
+            await self._session.__aexit__(exc_type, exc, tb)
+            self._session = None
+
+    def rotate_profile(self) -> None:
+        others = [p for p in IMPERSONATE_PROFILES if p != self.profile]
+        self.profile = random.choice(others or IMPERSONATE_PROFILES)
+        print(f"🔄 Rotated impersonate profile -> {self.profile}")
+
+    async def rewarm(self) -> None:
+        """Hit the homepage so Cloudflare cookies attach to this session."""
+        if not self._session:
+            return
         try:
-            # Let the impersonation profile own the headers so the TLS fingerprint and
-            # the User-Agent/Sec-* headers stay consistent (mismatches are an instant block).
+            await self._session.get(
+                "https://letterboxd.com/",
+                impersonate=self.profile,
+                timeout=20,
+                allow_redirects=True,
+            )
+            print(f"🍪 Session warmed with profile={self.profile}")
+        except Exception as e:
+            print(f"   ⚠️ Warm-up request failed (continuing): {e}")
+
+    async def _fetch_once(self, url: str) -> str:
+        """Single request via the shared session (or a one-off session)."""
+        if self._session is not None:
+            resp = await self._session.get(
+                url,
+                impersonate=self.profile,
+                timeout=30,
+                allow_redirects=True,
+            )
+        else:
             async with cffi_requests.AsyncSession() as session:
                 resp = await session.get(
                     url,
-                    impersonate=profile,
+                    impersonate=self.profile,
                     timeout=30,
                     allow_redirects=True,
                 )
-            status = resp.status_code
 
-            if status == 404:
-                raise Exception("404 Not Found: User or page does not exist")
+        status = resp.status_code
+        if status == 404:
+            raise Exception("404 Not Found: User or page does not exist")
+        if status == 403:
+            raise Exception("CLOUDFLARE_BLOCKED: 403 Forbidden")
+        if status != 200:
+            raise Exception(f"HTTP {status} error")
 
-            if status == 403:
-                last_error = "CLOUDFLARE_BLOCKED: 403 Forbidden"
-                print(f"   🛡️ curl_cffi got 403 for {url} (profile={profile}, attempt {attempt + 1}/{retries})")
-                await asyncio.sleep(0.5 * (attempt + 1) + random.random() * 0.5)
-                continue
+        html = resp.text
+        if not html:
+            raise Exception("Empty response received")
+        if is_cloudflare_challenge(html):
+            raise Exception("CLOUDFLARE_BLOCKED: challenge page")
+        return html
 
-            if status != 200:
-                last_error = f"HTTP {status} error"
-                await asyncio.sleep(0.3 * (attempt + 1))
-                continue
+    async def fetch(self, url: str, retries: int = FETCH_RETRIES) -> str:
+        """
+        Fetch a URL with retries, then managed-scraper / aiohttp fallbacks.
 
-            html = resp.text
-            if not html:
-                last_error = "Empty response received"
-                await asyncio.sleep(0.3 * (attempt + 1))
-                continue
+        Raises Exception('404 Not Found...') for missing pages (do not retry).
+        Raises Exception('CLOUDFLARE_BLOCKED...') after exhausting retries.
+        """
+        print(f"🌐 Attempting to fetch: {url}")
+        last_error = "CLOUDFLARE_BLOCKED: 403 Forbidden"
 
-            if is_cloudflare_challenge(html):
-                last_error = "CLOUDFLARE_BLOCKED: challenge page"
-                print(f"   🛡️ curl_cffi got a Cloudflare challenge for {url} (profile={profile})")
-                await asyncio.sleep(0.5 * (attempt + 1) + random.random() * 0.5)
-                continue
+        if CURL_CFFI_AVAILABLE:
+            for attempt in range(retries):
+                try:
+                    html = await self._fetch_once(url)
+                    print(f"✅ Successfully fetched {url} via curl_cffi (length: {len(html)})")
+                    return html
+                except Exception as e:
+                    error_msg = str(e)
+                    if "404" in error_msg or "Not Found" in error_msg:
+                        raise
+                    last_error = error_msg
+                    print(
+                        f"   🛡️ curl_cffi failed for {url} "
+                        f"(profile={self.profile}, attempt {attempt + 1}/{retries}): {error_msg}"
+                    )
+                    if attempt < retries - 1:
+                        self.rotate_profile()
+                        # Exponential backoff with jitter — short fixed sleeps get us banned again.
+                        delay = (1.2 * (2 ** attempt)) + random.random() * 1.5
+                        await asyncio.sleep(delay)
 
-            return html
-        except Exception as e:
-            error_msg = str(e)
-            # 404 is definitive - do not retry or fall back.
-            if "404" in error_msg or "Not Found" in error_msg:
-                raise
-            last_error = error_msg
-            print(f"   ⚠️ curl_cffi error for {url} (profile={profile}): {error_msg}")
-            await asyncio.sleep(0.3 * (attempt + 1))
+            print(f"⚠️  curl_cffi exhausted retries for {url}: {last_error}")
 
-    raise Exception(last_error)
+            managed_html = await fetch_with_managed_scraper(url, get_headers())
+            if managed_html:
+                return managed_html
+            print("   Falling back to aiohttp...")
+        else:
+            print("⚠️  curl_cffi unavailable, trying managed scraper / aiohttp...")
+            managed_html = await fetch_with_managed_scraper(url, get_headers())
+            if managed_html:
+                return managed_html
+
+        # Plain aiohttp last resort (usually blocked on datacenter IPs).
+        timeout = ClientTimeout(total=30, connect=10)
+        request_headers = get_headers()
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url, headers=request_headers) as response:
+                if response.status == 404:
+                    raise Exception("404 Not Found: User or page does not exist")
+                if response.status != 200:
+                    error_text = await response.text()
+                    if response.status == 403:
+                        print(f"   🛡️ aiohttp also received 403 for {url}")
+                        managed_html = await fetch_with_managed_scraper(url, request_headers)
+                        if managed_html:
+                            return managed_html
+                        raise Exception("CLOUDFLARE_BLOCKED: 403 Forbidden")
+                    raise Exception(
+                        f"HTTP {response.status} error: {response.reason}. Response: {error_text[:200]}"
+                    )
+                html = await response.text()
+                if is_cloudflare_challenge(html):
+                    print("   🛡️ aiohttp returned Cloudflare challenge page")
+                    managed_html = await fetch_with_managed_scraper(url, request_headers)
+                    if managed_html:
+                        return managed_html
+                    raise Exception("CLOUDFLARE_BLOCKED: challenge page")
+                print(f"✅ Successfully fetched {url} via aiohttp (length: {len(html)})")
+                return html
+
+
+async def _fetch_curl_cffi(url: str, retries: int = FETCH_RETRIES) -> str:
+    """Backward-compatible wrapper around LetterboxdClient for one-off fetches."""
+    async with LetterboxdClient(warm=False) as client:
+        # Reimplement only the curl_cffi portion for callers that expect the old raise behavior
+        last_error = "CLOUDFLARE_BLOCKED: 403 Forbidden"
+        for attempt in range(retries):
+            try:
+                return await client._fetch_once(url)
+            except Exception as e:
+                error_msg = str(e)
+                if "404" in error_msg or "Not Found" in error_msg:
+                    raise
+                last_error = error_msg
+                print(
+                    f"   🛡️ curl_cffi failed for {url} "
+                    f"(profile={client.profile}, attempt {attempt + 1}/{retries}): {error_msg}"
+                )
+                if attempt < retries - 1:
+                    client.rotate_profile()
+                    await asyncio.sleep(1.2 * (2 ** attempt) + random.random() * 1.5)
+        raise Exception(last_error)
 
 
 async def fetch_with_cloudflare_bypass(url: str, headers: dict = None) -> str:
@@ -853,53 +997,10 @@ async def fetch_with_cloudflare_bypass(url: str, headers: dict = None) -> str:
 
     Order: curl_cffi (primary) -> managed scraper API (if configured) -> plain aiohttp (last resort).
     """
-    request_headers = headers or get_headers()
-
-    print(f"🌐 Attempting to fetch: {url}")
-
-    # 1. curl_cffi browser impersonation (primary)
-    if CURL_CFFI_AVAILABLE:
-        try:
-            html = await _fetch_curl_cffi(url)
-            print(f"✅ Successfully fetched {url} via curl_cffi (length: {len(html)})")
-            return html
-        except Exception as e:
-            error_msg = str(e)
-            # 404 is definitive - propagate so callers can surface "user not found".
-            if "404" in error_msg or "Not Found" in error_msg:
-                raise
-            print(f"⚠️  curl_cffi failed for {url}: {error_msg}")
-
-            # 2. Managed scraper API fallback (env-gated, off by default)
-            managed_html = await fetch_with_managed_scraper(url, request_headers)
-            if managed_html:
-                return managed_html
-            print(f"   Falling back to aiohttp...")
-
-    # 3. Plain aiohttp (last resort - usually blocked on datacenter IPs, but free to try)
-    timeout = ClientTimeout(total=30, connect=10)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.get(url, headers=request_headers) as response:
-            if response.status == 404:
-                raise Exception("404 Not Found: User or page does not exist")
-            if response.status != 200:
-                error_text = await response.text()
-                if response.status == 403:
-                    print(f"   🛡️ aiohttp also received 403 for {url}")
-                    managed_html = await fetch_with_managed_scraper(url, request_headers)
-                    if managed_html:
-                        return managed_html
-                    raise Exception("CLOUDFLARE_BLOCKED: 403 Forbidden")
-                raise Exception(f"HTTP {response.status} error: {response.reason}. Response: {error_text[:200]}")
-            html = await response.text()
-            if is_cloudflare_challenge(html):
-                print(f"   🛡️ aiohttp returned Cloudflare challenge page")
-                managed_html = await fetch_with_managed_scraper(url, request_headers)
-                if managed_html:
-                    return managed_html
-                raise Exception("CLOUDFLARE_BLOCKED: challenge page")
-            print(f"✅ Successfully fetched {url} via aiohttp (length: {len(html)})")
-            return html
+    # headers kept for API compatibility; impersonation owns real browser headers.
+    _ = headers
+    async with LetterboxdClient(warm=True) as client:
+        return await client.fetch(url)
 
 
 def parse_films_page(html: str) -> list[dict]:
@@ -1129,27 +1230,28 @@ async def get_popular_film_slugs(pages: int, delay: float = 0.3) -> list[str]:
     all_slugs = []
     seen = set()
 
-    for page in range(1, pages + 1):
-        url = f"https://letterboxd.com/csi/films/films-browser-list/popular/page/{page}/?esiAllowFilters=true"
-        try:
-            print(f"📡 Fetching popular page {page}/{pages}...")
-            html = await fetch_with_cloudflare_bypass(url)
-        except Exception as e:
-            print(f"   ⚠️ Failed to fetch popular page {page}: {e}")
-            break
+    async with LetterboxdClient(warm=True) as client:
+        for page in range(1, pages + 1):
+            url = f"https://letterboxd.com/csi/films/films-browser-list/popular/page/{page}/?esiAllowFilters=true"
+            try:
+                print(f"📡 Fetching popular page {page}/{pages}...")
+                html = await client.fetch(url)
+            except Exception as e:
+                print(f"   ⚠️ Failed to fetch popular page {page}: {e}")
+                break
 
-        page_slugs = parse_popular_slugs(html)
-        if not page_slugs:
-            print(f"   ⚠️ No slugs on page {page}, stopping (reached the end or blocked).")
-            break
+            page_slugs = parse_popular_slugs(html)
+            if not page_slugs:
+                print(f"   ⚠️ No slugs on page {page}, stopping (reached the end or blocked).")
+                break
 
-        new = [s for s in page_slugs if s not in seen]
-        for s in new:
-            seen.add(s)
-        all_slugs.extend(new)
-        print(f"   Found {len(page_slugs)} films ({len(all_slugs)} unique total)")
+            new = [s for s in page_slugs if s not in seen]
+            for s in new:
+                seen.add(s)
+            all_slugs.extend(new)
+            print(f"   Found {len(page_slugs)} films ({len(all_slugs)} unique total)")
 
-        await asyncio.sleep(delay)
+            await asyncio.sleep(delay + random.random() * 0.2)
 
     return all_slugs
 

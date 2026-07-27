@@ -150,10 +150,17 @@ class ScraperRegressionTests(unittest.IsolatedAsyncioTestCase):
             }
         }
 
+        client = AsyncMock()
+        client.__aenter__.return_value = client
+        client.__aexit__.return_value = None
+        client.fetch = AsyncMock(side_effect=[valid_html, valid_html, valid_html])
+        client.rotate_profile = lambda: None
+        client.rewarm = AsyncMock()
+
         with patch.object(
             scraper,
-            "fetch_with_cloudflare_bypass",
-            new=AsyncMock(side_effect=[valid_html, valid_html, valid_html]),
+            "LetterboxdClient",
+            return_value=client,
         ), patch.object(
             scraper,
             "parse_films_page",
@@ -166,13 +173,61 @@ class ScraperRegressionTests(unittest.IsolatedAsyncioTestCase):
             scraper,
             "enrich_with_letterboxd_stats",
             new=AsyncMock(return_value=[]),
-        ), patch.object(scraper, "save_films") as save_films_mock:
+        ), patch.object(scraper, "save_films") as save_films_mock, patch.object(
+            scraper, "PAGE_DELAY_SECONDS", 0
+        ), patch.object(
+            scraper, "PAGE_DELAY_JITTER", 0
+        ):
             films = await scraper.get_user_films("testuser")
 
         self.assertEqual(len(films), 1)
         self.assertEqual(films[0]["slug"], "test-film")
         self.assertEqual(films[0]["letterboxd_watches"], 12_345)
         save_films_mock.assert_not_called()
+
+    async def test_page_recovery_retries_before_partial(self) -> None:
+        """Blocked mid-pagination should cool down and retry before giving up."""
+        page_html = (
+            '<html><head><title>Films</title></head>'
+            '<body>' + ('x' * 80) + ' data-target-link="/film/a/">ok</body></html>'
+        )
+        page_films = [
+            {
+                "title": "A",
+                "year": 2020,
+                "slug": "a",
+                "letterboxd_id": "",
+                "letterboxd_url": "https://letterboxd.com/film/a/",
+                "user_rating": None,
+            }
+        ]
+
+        client = AsyncMock()
+        client.__aenter__.return_value = client
+        client.__aexit__.return_value = None
+        client.fetch = AsyncMock(
+            side_effect=[
+                page_html,
+                Exception("CLOUDFLARE_BLOCKED: 403 Forbidden"),
+                page_html,
+                page_html,
+                page_html,
+            ]
+        )
+        client.rotate_profile = lambda: None
+        client.rewarm = AsyncMock()
+
+        with patch.object(scraper, "LetterboxdClient", return_value=client), patch.object(
+            scraper, "parse_films_page", side_effect=[page_films, page_films, [], []]
+        ), patch.object(scraper, "PAGE_DELAY_SECONDS", 0), patch.object(
+            scraper, "PAGE_DELAY_JITTER", 0
+        ), patch.object(scraper, "BLOCK_COOLDOWN_BASE", 0):
+            films, source = await scraper.get_user_film_list("testuser")
+
+        self.assertEqual(source, "full_scrape")
+        self.assertEqual(len(films), 2)
+        self.assertGreaterEqual(client.fetch.await_count, 3)
+        client.rewarm.assert_awaited()
 
     async def test_managed_scraper_prefers_explicit_provider(self) -> None:
         with patch.dict("os.environ", {"SCRAPER_PROVIDER": "scrapingbee"}, clear=False), patch.object(
@@ -187,7 +242,7 @@ class ScraperRegressionTests(unittest.IsolatedAsyncioTestCase):
         zenrows_mock.assert_not_awaited()
 
     async def test_managed_scraper_tries_both_when_provider_unspecified(self) -> None:
-        with patch.dict("os.environ", {}, clear=False), patch.object(
+        with patch.dict("os.environ", {"SCRAPER_PROVIDER": ""}, clear=False), patch.object(
             scraper, "fetch_with_scrapingbee", new=AsyncMock(return_value=None)
         ) as scrapingbee_mock, patch.object(
             scraper, "fetch_with_zenrows", new=AsyncMock(return_value="<html>zen</html>")
